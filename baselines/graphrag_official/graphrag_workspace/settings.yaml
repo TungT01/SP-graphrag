@@ -1,0 +1,84 @@
+### GraphRAG 官方基线配置（v3.x 格式）
+### LLM：Kimi API（OpenAI 兼容）
+### Embedding：本地 sentence-transformers/all-MiniLM-L6-v2 服务
+
+completion_models:
+  default_completion_model:
+    model_provider: openai
+    model: moonshot-v1-8k
+    auth_method: api_key
+    api_key: ${GRAPHRAG_API_KEY}
+    api_base: https://api.moonshot.cn/v1
+    retry:
+      type: exponential_backoff
+
+embedding_models:
+  default_embedding_model:
+    model_provider: openai
+    model: all-MiniLM-L6-v2
+    auth_method: api_key
+    api_key: local
+    api_base: http://localhost:11434/v1
+    retry:
+      type: exponential_backoff
+
+input:
+  type: text
+
+chunking:
+  type: sentence
+  size: 1200
+  overlap: 100
+  encoding_model: cl100k_base
+
+input_storage:
+  type: file
+  base_dir: "input"
+
+output_storage:
+  type: file
+  base_dir: "output"
+
+reporting:
+  type: file
+  base_dir: "output/logs"
+
+cache:
+  type: json
+  storage:
+    type: file
+    base_dir: "cache"
+
+vector_store:
+  type: lancedb
+  db_uri: "output/lancedb"
+
+embed_text:
+  embedding_model_id: default_embedding_model
+
+extract_graph:
+  completion_model_id: default_completion_model
+  max_gleanings: 0
+
+summarize_descriptions:
+  completion_model_id: default_completion_model
+
+generate_community_reports:
+  completion_model_id: default_completion_model
+
+# ---------------------------------------------------------------
+# Query 阶段配置（适配 moonshot-v1-8k 的 8192 token 上限）
+# 默认 max_context_tokens=12000，超出模型限制，需要显式降低
+# ---------------------------------------------------------------
+local_search:
+  completion_model_id: default_completion_model
+  embedding_model_id: default_embedding_model
+  max_context_tokens: 5000   # 留出 ~3000 tokens 给 prompt 模板 + 答案
+  text_unit_prop: 0.5
+  community_prop: 0.15
+  top_k_entities: 10
+  top_k_relationships: 10
+
+global_search:
+  completion_model_id: default_completion_model
+  max_context_tokens: 5000

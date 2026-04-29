@@ -1,0 +1,52 @@
+{
+  "system_name": "graphrag_official",
+  "search_type": "local",
+  "num_queries": 5,
+  "num_valid_queries": 3,
+  "precision_at_k": {
+    "1": 0.0,
+    "3": 0.0,
+    "5": 0.0,
+    "10": 0.0
+  },
+  "recall_at_k": {
+    "1": 0.0,
+    "3": 0.0,
+    "5": 0.0,
+    "10": 0.0
+  },
+  "f1_at_k": {
+    "1": 0.0,
+    "3": 0.0,
+    "5": 0.0,
+    "10": 0.0
+  },
+  "mrr": 0.0,
+  "ndcg_at_k": {
+    "1": 0.0,
+    "3": 0.0,
+    "5": 0.0,
+    "10": 0.0
+  },
+  "avg_rouge_l": 0.019514836959744642,
+  "avg_context_tokens": 187.0,
+  "avg_latency_ms": 7867.423591855913,
+  "by_question_type": {
+    "null_query": {
+      "n": 2,
+      "rouge_l": 0.026685643123999292,
+      "avg_tokens": 81.5
+    },
+    "temporal_query": {
+      "n": 2,
+      "rouge_l": 0.016666666666666666,
+      "avg_tokens": 255.0
+    },
+    "comparison_query": {
+      "n": 1,
+      "rouge_l": 0.010869565217391304,
+      "avg_tokens": 262.0
+    }
+  },
+  "num_errors": 0
+}
