@@ -20,7 +20,7 @@ J = Q_leiden − λ · H_structure
 
 ```
 SP-GraphRAG/
-├── graphrag_improved/              # 核心源码（v7 最终版）
+├── graphrag_improved/              # 核心源码（v8 当前版本）
 │   ├── constrained_leiden/         # 核心算法模块
 │   │   ├── leiden_constrained.py   # 结构熵约束 Leiden（CommunityEntropyState + O(1) 增量 ΔH）
 │   │   ├── annealing.py            # λ 退火调度（指数/线性/余弦/阶梯 4 种曲线）
@@ -29,9 +29,9 @@ SP-GraphRAG/
 │   │   └── physical_anchor.py      # PhysicalNode 数据类 + 结构熵计算
 │   ├── data/ingestion.py           # 文档 → 段落 → 句子三级物理切分
 │   ├── extraction/extractor.py     # spaCy 依存句法三元组抽取（instance-level，无实体消解）
-│   ├── retrieval/retriever.py      # U-Retrieval（TopDown 社区导航 + BottomUp TF-IDF 检索）
-│   ├── evaluation/evaluator.py     # P@K, R@K, MRR, NDCG@K, 社区质量指标
-│   ├── experiments/                # v6/v7 六组消融实验脚本与结果
+│   ├── retrieval/retriever.py      # U-Retrieval（TopDown 社区导航 + BottomUp TF-IDF 检索，v8 已修复锚点 bug）
+│   ├── evaluation/evaluator.py     # P@K, R@K, MRR, NDCG@K, Bootstrap CI, Para-Hit 指标
+│   ├── experiments/                # v6/v7/v8 消融实验脚本与结果
 │   └── config.yaml                 # 项目配置
 │
 ├── experiments/                    # 早期实验（v4/v5）
@@ -45,7 +45,7 @@ SP-GraphRAG/
 │
 ├── data/multihop_rag/              # MultiHop-RAG 数据集（609 篇文章, 2556 QA）
 ├── research-sp-graphrag-v2/        # 研究论文（v2 最终版，含完整论文）
-├── research/                       # 研究论文（v1 初版草稿）
+├── research-v1-archive/            # 研究论文（v1 初版草稿，已归档）
 ├── reports/                        # 实验报告
 ├── docs/                           # 项目文档
 ├── sample_data/                    # 冒烟测试样例数据
@@ -73,14 +73,14 @@ cd graphrag_improved
 python3 run.py --config config.yaml --data-dir ../sample_data
 ```
 
-### 运行六组消融实验（v7）
+### 运行六组消融实验（v8）
 
 ```bash
 cd graphrag_improved
 python3 -m experiments.run_multihop_eval \
     --data-dir ../data/multihop_rag \
-    --n-qa 200 \
-    --output-dir experiments/results_v7
+    --n-qa 500 \
+    --output-dir experiments/results_v8
 ```
 
 ## 核心算法组件
@@ -95,20 +95,25 @@ python3 -m experiments.run_multihop_eval \
 
 **5. U-Retrieval**：TopDown（从高层社区逐层导航到底层）+ BottomUp（TF-IDF 直接检索物理文本块），按 alpha 参数分配字符预算后融合。
 
-## 实验结果（v7, MultiHop-RAG）
+## 实验结果（v8, MultiHop-RAG, n=500, 429 有效 QA）
 
-六组消融实验，200 QA 采样（169 有效）：
+六组消融实验，含 Bootstrap CI（1000 resamples, 95%）和 Para-Hit 指标：
 
-| 配置 | λ_0 | avg_H | MRR | R@5 | NDCG@10 |
-|------|:---:|:---:|:---:|:---:|:---:|
-| Baseline（无 EdgeSchedule, λ=0） | 0 | 0.000 | 0.4226 | 0.2619 | 0.3142 |
-| EdgeSchedule only | 0 | 0.137 | 0.4206 | 0.2619 | 0.3131 |
-| Weak (λ=0.001) | 0.001 | 0.115 | 0.4211 | 0.2619 | 0.3134 |
-| **Med (λ=0.003, 推荐)** | **0.003** | **0.105** | 0.4203 | **0.2636** | 0.3136 |
-| +PathA | 0.001 | 0.117 | 0.4206 | 0.2585 | 0.3119 |
-| +CrossDoc | 0.001 | 0.133 | 0.4180 | 0.2560 | 0.3088 |
+| 配置 | λ_0 | avg_H | MRR | MRR 95% CI | Para-MRR | R@5 | NDCG@10 |
+|------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| Baseline（无 ES, λ=0） | 0 | 0.000 | 0.4478 | [0.409, 0.484] | 0.4275 | 0.399 | 0.3624 |
+| EdgeSchedule only | 0 | 0.137 | 0.4469 | [0.407, 0.485] | 0.4275 | 0.401 | 0.3607 |
+| Weak (λ=0.001) | 0.001 | 0.115 | 0.4478 | [0.408, 0.485] | 0.4275 | 0.402 | 0.3612 |
+| **Med (λ=0.003, 推荐)** | **0.003** | **0.089** | 0.4463 | [0.407, 0.485] | 0.4275 | 0.398 | 0.3605 |
+| +PathA | 0.001 | 0.120 | 0.4464 | [0.407, 0.485] | 0.4275 | 0.399 | 0.3613 |
+| +CrossDoc | 0.001 | 0.149 | 0.4428 | [0.403, 0.481] | 0.4275 | 0.397 | 0.3596 |
 
-**核心结论**：结构熵随 λ 增大单调递减（0.137→0.105），检索质量保持无损（MRR 差距 < 1.5%），R@5 在推荐配置下微升。跨文档边引入噪声，不推荐。
+**核心结论**：
+
+- 结构熵随 λ 增大单调递减（0.137→0.089），验证惩罚项有效控制社区物理纯净度
+- 所有 6 组的 MRR 95% CI 完全重叠 → 检索质量无统计显著差异，结构熵惩罚「无损」
+- Para-MRR 全组恒定（0.4275）→ 段落级检索表现不受社区检测参数影响（BottomUp bug 已修复但段落匹配路径一致）
+- 跨文档边引入噪声（avg_H 反升至 0.149，MRR 微降），不推荐
 
 ## 版本演进
 
@@ -118,13 +123,13 @@ python3 -m experiments.run_multihop_eval \
 | v4 | 四组消融实验：Path A + Path B 对照 | 已完成 |
 | v5 | anchor_granularity="para" + EdgeSchedule + 移除提前终止 | 已完成 |
 | v6 | EdgeSchedule 权重校准（2.0/1.5/1.0）+ 噪声过滤 | 已完成 |
-| v7 | 六组消融实验完整验证：熵可控 + 检索无损 | **当前版本** |
+| v7 | 六组消融实验完整验证（n=200）：熵可控 + 检索无损 | 已完成 |
+| v8 | 修复 BottomUp 锚点 bug + Bootstrap CI + Para-Hit 指标 + 大样本验证（n=500, 429 有效） | **当前版本** |
 
 ## 已知问题
 
-1. **BottomUp 锚点加权未触发**：`entity_chunks` 使用 sent_id，而 text_units 用 para_id，格式不匹配导致 1.5x 加权失效
-2. **社区摘要缺失**：当前管线不生成 community_summary（需 LLM），TopDown 检索仅用实体列表
-3. **跨文档边噪声**：同名异义实体被错误连接，需引入轻量实体消歧
+1. **社区摘要缺失**：当前管线不生成 community_summary（需 LLM），TopDown 检索仅用实体列表
+2. **跨文档边噪声**：同名异义实体被错误连接，需引入轻量实体消歧
 
 ## 技术文档
 

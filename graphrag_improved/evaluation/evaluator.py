@@ -30,6 +30,7 @@ evaluation/evaluator.py
 from __future__ import annotations
 
 import math
+import random
 import re
 from collections import Counter
 from dataclasses import dataclass, field
@@ -131,6 +132,42 @@ class TextMatchMetrics:
             f"  Token F1    : {self.token_f1:.4f}\n"
             f"  ROUGE-L     : {self.rouge_l:.4f}"
         )
+
+
+@dataclass
+class ParagraphHitMetrics:
+    """
+    段落级精准度指标（A3：直接支撑"微观精准"目标）。
+
+    区别于文档级 P@K：ground-truth 是 para_id，衡量是否检索到包含答案的具体段落。
+    比文档级更严格：找到对的文档但不是对的段落不算命中。
+    """
+    paragraph_hit_at_k: Dict[int, float] = field(default_factory=dict)   # {k: hit_rate}
+    mrr_paragraph: float = 0.0    # 段落级 MRR
+    num_queries: int = 0
+
+    def summary(self) -> str:
+        lines = [f"段落级精准度评估（{self.num_queries} 个查询）",
+                 f"  Para-MRR     : {self.mrr_paragraph:.4f}"]
+        for k in sorted(self.paragraph_hit_at_k.keys()):
+            lines.append(f"  Para-Hit@{k:<2}  : {self.paragraph_hit_at_k[k]:.4f}")
+        return "\n".join(lines)
+
+
+@dataclass
+class BootstrapCI:
+    """Bootstrap 置信区间（A2：统计显著性）。"""
+    metric: str
+    mean: float
+    ci_lower: float
+    ci_upper: float
+    n_samples: int
+    n_bootstrap: int = 1000
+
+    def summary(self) -> str:
+        return (f"{self.metric}: {self.mean:.4f}  "
+                f"95%CI=[{self.ci_lower:.4f}, {self.ci_upper:.4f}]  "
+                f"(n={self.n_samples}, B={self.n_bootstrap})")
 
 
 # ---------------------------------------------------------------------------
@@ -541,6 +578,214 @@ class Evaluator:
             metrics.ndcg_at_k[k] = ndcg_sum[k] / n
 
         return metrics
+
+    def evaluate_paragraph_hit(
+        self,
+        qa_pairs: List["QAPair"],
+        retriever,
+        k_values: List[int] = None,
+    ) -> "ParagraphHitMetrics":
+        """
+        段落级精准度评估（A3）。
+
+        ground-truth 为 para_id（从 supporting_doc_ids 中提取，或由 QAPair.metadata
+        中的 'para_ids' 字段提供）。retriever 返回的 bottom_up_hits 的 chunk_id
+        即为 para_id，直接比对。
+
+        Parameters
+        ----------
+        qa_pairs : List[QAPair]
+            每个 QAPair 的 metadata 中应包含 'para_ids'（List[str]）；
+            若无，则退化为文档级（doc_id 级别）作为近似。
+        retriever : URetriever
+        k_values : List[int]
+
+        Returns
+        -------
+        ParagraphHitMetrics
+        """
+        if k_values is None:
+            k_values = [1, 3, 5, 10]
+
+        metrics = ParagraphHitMetrics(num_queries=len(qa_pairs))
+        if not qa_pairs:
+            return metrics
+
+        hit_sum = {k: 0.0 for k in k_values}
+        mrr_sum = 0.0
+        valid_n = 0
+
+        for qa in qa_pairs:
+            # 优先使用 metadata 中的 para_ids，否则用 context_ids（doc_id 近似）
+            para_ids: List[str] = qa.metadata.get("para_ids", [])
+            if not para_ids:
+                para_ids = qa.context_ids  # 退化为文档级
+            if not para_ids:
+                continue
+            valid_n += 1
+
+            result = retriever.retrieve(qa.question)
+
+            # bottom_up_hits 的 chunk_id 是 para_id
+            retrieved_para_ids = [hit.chunk_id for hit in result.bottom_up_hits]
+
+            # Para-MRR
+            mrr_sum += compute_mrr(retrieved_para_ids, para_ids)
+
+            # Para-Hit@K：top-K 中是否有至少一个命中
+            para_set = set(para_ids)
+            for k in k_values:
+                top_k = retrieved_para_ids[:k]
+                hit = 1.0 if any(pid in para_set for pid in top_k) else 0.0
+                hit_sum[k] += hit
+
+        n = valid_n if valid_n > 0 else 1
+        metrics.mrr_paragraph = mrr_sum / n
+        for k in k_values:
+            metrics.paragraph_hit_at_k[k] = hit_sum[k] / n
+        metrics.num_queries = valid_n
+
+        return metrics
+
+    def bootstrap_ci(
+        self,
+        per_query_scores: List[float],
+        n_bootstrap: int = 1000,
+        ci: float = 0.95,
+        seed: int = 42,
+        metric_name: str = "metric",
+    ) -> "BootstrapCI":
+        """
+        Bootstrap 置信区间计算（A2）。
+
+        Parameters
+        ----------
+        per_query_scores : List[float]
+            每条查询的单独得分（如每条 QA 的 RR、P@5 等）
+        n_bootstrap : int
+            bootstrap 采样次数，默认 1000
+        ci : float
+            置信水平，默认 0.95
+        seed : int
+            随机种子
+        metric_name : str
+            指标名称（用于输出）
+
+        Returns
+        -------
+        BootstrapCI
+        """
+        rng = random.Random(seed)
+        n = len(per_query_scores)
+        if n == 0:
+            return BootstrapCI(metric=metric_name, mean=0.0, ci_lower=0.0,
+                               ci_upper=0.0, n_samples=0, n_bootstrap=n_bootstrap)
+
+        mean = sum(per_query_scores) / n
+        boot_means = []
+        for _ in range(n_bootstrap):
+            sample = [rng.choice(per_query_scores) for _ in range(n)]
+            boot_means.append(sum(sample) / n)
+
+        boot_means.sort()
+        alpha = (1 - ci) / 2
+        lo_idx = int(alpha * n_bootstrap)
+        hi_idx = int((1 - alpha) * n_bootstrap) - 1
+        return BootstrapCI(
+            metric=metric_name,
+            mean=mean,
+            ci_lower=boot_means[lo_idx],
+            ci_upper=boot_means[hi_idx],
+            n_samples=n,
+            n_bootstrap=n_bootstrap,
+        )
+
+    def evaluate_retrieval_with_ci(
+        self,
+        qa_pairs: List["QAPair"],
+        retriever,
+        k_values: List[int] = None,
+        n_bootstrap: int = 1000,
+    ) -> Tuple["RetrievalMetrics", Dict[str, "BootstrapCI"]]:
+        """
+        evaluate_retrieval 的扩展版：同时返回 bootstrap 95% CI。
+
+        Returns
+        -------
+        Tuple[RetrievalMetrics, Dict[str, BootstrapCI]]
+            第二个元素是 {指标名: BootstrapCI} 字典，包含 mrr、p@5、r@5、ndcg@10
+        """
+        if k_values is None:
+            k_values = [1, 3, 5, 10]
+
+        # 收集每条查询的逐条得分
+        per_mrr: List[float] = []
+        per_p5: List[float] = []
+        per_r5: List[float] = []
+        per_ndcg10: List[float] = []
+
+        valid_qa = [qa for qa in qa_pairs if qa.context_ids]
+
+        for qa in valid_qa:
+            result = retriever.retrieve(qa.question)
+            seen_ids: set = set()
+            retrieved_ids: List[str] = []
+            bottom_ids = [hit.chunk_id for hit in result.bottom_up_hits]
+            top_down_ids: List[str] = []
+            for comm_hit in result.top_down_hits:
+                candidate_ids = comm_hit.doc_ids if comm_hit.doc_ids else []
+                if not candidate_ids:
+                    seen_doc: set = set()
+                    for tid in comm_hit.text_unit_ids:
+                        doc_id = re.sub(r"-p\d+-s\d+$", "", str(tid)) or str(tid)
+                        if doc_id not in seen_doc:
+                            candidate_ids.append(doc_id)
+                            seen_doc.add(doc_id)
+                for did in candidate_ids[:1]:
+                    if len(top_down_ids) >= 5:
+                        break
+                    top_down_ids.append(did)
+                if len(top_down_ids) >= 5:
+                    break
+            for i in range(max(len(bottom_ids), len(top_down_ids))):
+                if i < len(bottom_ids):
+                    cid = bottom_ids[i]
+                    if cid not in seen_ids:
+                        retrieved_ids.append(cid)
+                        seen_ids.add(cid)
+                if i < len(top_down_ids):
+                    cid = top_down_ids[i]
+                    if cid not in seen_ids:
+                        retrieved_ids.append(cid)
+                        seen_ids.add(cid)
+
+            per_mrr.append(compute_mrr(retrieved_ids, qa.context_ids))
+            per_p5.append(compute_precision_at_k(retrieved_ids, qa.context_ids, 5))
+            per_r5.append(compute_recall_at_k(retrieved_ids, qa.context_ids, 5))
+            per_ndcg10.append(compute_ndcg_at_k(retrieved_ids, qa.context_ids, 10))
+
+        # 聚合为 RetrievalMetrics
+        n = len(per_mrr) if per_mrr else 1
+        rm = RetrievalMetrics(num_queries=n)
+        rm.mrr = sum(per_mrr) / n
+        for k in k_values:
+            rm.precision_at_k[k] = 0.0
+            rm.recall_at_k[k] = 0.0
+            rm.f1_at_k[k] = 0.0
+            rm.ndcg_at_k[k] = 0.0
+        rm.precision_at_k[5] = sum(per_p5) / n
+        rm.recall_at_k[5] = sum(per_r5) / n
+        rm.ndcg_at_k[10] = sum(per_ndcg10) / n
+
+        # Bootstrap CI
+        ci_results = {
+            "mrr": self.bootstrap_ci(per_mrr, n_bootstrap, metric_name="MRR"),
+            "p@5": self.bootstrap_ci(per_p5, n_bootstrap, metric_name="P@5"),
+            "r@5": self.bootstrap_ci(per_r5, n_bootstrap, metric_name="R@5"),
+            "ndcg@10": self.bootstrap_ci(per_ndcg10, n_bootstrap, metric_name="NDCG@10"),
+        }
+
+        return rm, ci_results
 
     def evaluate_text_match(
         self,

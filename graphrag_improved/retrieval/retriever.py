@@ -371,21 +371,25 @@ class BottomUpRetriever:
                 if node_id and sent_id:
                     self._node_to_sent[node_id] = sent_id
 
-                # title → chunk_id 集合（兼容旧检索逻辑）
+                # title → para_id 集合（text_units 的 chunk_id 是 para_id 格式）
+                # sent_id 格式为 {para_id}-s{NNN}，截断 -s{NNN} 后缀得到 para_id
                 if "title" in entities_df.columns:
                     title = str(row["title"])
-                    # 优先使用 sent_id
                     if sent_id:
-                        self._entity_chunks.setdefault(title, set()).add(sent_id)
-                    # 兼容旧格式
+                        para_id = re.sub(r"-s\d+$", "", sent_id)
+                        self._entity_chunks.setdefault(title, set()).add(para_id)
+                    # 兼容旧格式（text_unit_ids 可能已是 para_id）
                     raw = row.get("text_unit_ids", [])
                     if isinstance(raw, list):
                         for x in raw:
-                            self._entity_chunks.setdefault(title, set()).add(str(x))
+                            x_str = str(x)
+                            para_id = re.sub(r"-s\d+$", "", x_str)
+                            self._entity_chunks.setdefault(title, set()).add(para_id)
                     elif isinstance(raw, str):
                         for x in raw.split(";"):
                             if x.strip():
-                                self._entity_chunks.setdefault(title, set()).add(x.strip())
+                                para_id = re.sub(r"-s\d+$", "", x.strip())
+                                self._entity_chunks.setdefault(title, set()).add(para_id)
 
         # 构建文本块的 TF-IDF 索引
         docs = [unit.get("text", "") for unit in text_units]
@@ -492,7 +496,14 @@ class URetriever:
         自底向上检索返回的最大文本块数，默认 5
     max_context_chars : int
         融合上下文的最大字符数，默认 4000
+    retrieval_mode : str
+        检索模式，控制对照实验的变量隔离：
+        - "uretrieval"     : 双路径融合（默认，完整 SP-GraphRAG）
+        - "topdown_only"   : 仅自顶向下（复现官方 GraphRAG 检索行为）
+        - "bottomup_only"  : 仅自底向上（纯 TF-IDF 段落检索基线）
     """
+
+    MODES = {"uretrieval", "topdown_only", "bottomup_only"}
 
     def __init__(
         self,
@@ -502,7 +513,11 @@ class URetriever:
         top_k_communities: int = 5,
         top_k_chunks: int = 5,
         max_context_chars: int = 4000,
+        retrieval_mode: str = "uretrieval",
     ):
+        if retrieval_mode not in self.MODES:
+            raise ValueError(f"retrieval_mode must be one of {self.MODES}, got {retrieval_mode!r}")
+        self.retrieval_mode = retrieval_mode
         self.max_context_chars = max_context_chars
 
         self._top_down = TopDownRetriever(
@@ -539,14 +554,19 @@ class URetriever:
         RetrievalResult
             包含双轨命中结果和融合上下文的检索结果
         """
-        # 执行双轨检索
-        top_down_hits = self._top_down.retrieve(query)
-
-        # bottom-up 检索独立于 top-down 社区划分结果：
-        # entity_mentions 只来自调用方显式传入，不从 top-down 社区继承。
-        # 这样两个版本（baseline/ours）的 bottom-up 使用完全相同的输入，
-        # 确保对照实验的控制变量原则。
-        bottom_up_hits = self._bottom_up.retrieve(query, entity_mentions)
+        # 根据 retrieval_mode 决定启用哪条路径
+        # topdown_only：复现官方 GraphRAG，隔离社区检测效果
+        # bottomup_only：纯 TF-IDF 段落基线
+        # uretrieval：双路径融合（完整 SP-GraphRAG）
+        if self.retrieval_mode == "topdown_only":
+            top_down_hits = self._top_down.retrieve(query)
+            bottom_up_hits = []
+        elif self.retrieval_mode == "bottomup_only":
+            top_down_hits = []
+            bottom_up_hits = self._bottom_up.retrieve(query, entity_mentions)
+        else:  # uretrieval
+            top_down_hits = self._top_down.retrieve(query)
+            bottom_up_hits = self._bottom_up.retrieve(query, entity_mentions)
 
         # 融合上下文
         merged_context = self._merge_context(

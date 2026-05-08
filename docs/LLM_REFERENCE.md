@@ -2,7 +2,7 @@
 
 > **用途**：这是一份专为 LLM（大语言模型）上下文窗口优化的单一权威参考文档。所有数字、API 签名、数据结构均直接从代码提取，不与其他文档重复。当其他文档与本文档冲突时，以本文档为准。
 >
-> **最后同步代码**：2026-04-27
+> **最后同步代码**：2026-05-08
 >
 > **项目一句话描述**：在 GraphRAG 的社区检测阶段注入结构熵惩罚（J = Q_leiden − λ·H_structure），使同一来源文档的实体倾向于聚入同一社区，从而提升多跳问答的检索召回率。
 
@@ -327,49 +327,48 @@ class URetriever:
 
 ---
 
-## §5 已知缺陷与 v5 修复方案
+## §5 已知缺陷与修复历史
 
-### 5.1 v4 三大缺陷（已诊断，v5 代码已修复，实验未跑）
+### 5.1 v4 三大缺陷（已在 v5 修复，v7/v8 实验验证生效）
 
-| # | 缺陷 | 根因 | 影响 | v5 修复 |
+| # | 缺陷 | 根因 | 影响 | 修复版本 |
 |---|---|---|---|---|
-| D1 | 结构熵 H ≡ 0 | `anchor_granularity="sent"` → 每节点一个唯一 chunk_id → 社区内无分布可言 | λ·H 恒为 0，结构熵惩罚完全不工作 | 改为 `"para"` → 同段落多节点共享 para_id → H > 0 |
-| D2 | 底层图为断裂的句子森林 | 节点是实例级（sentence-scoped），仅有句内共现边 → ~24,858 个连通分量 | Leiden 无法跨句合并，层次结构意义有限 | EdgeSchedule 分 3 级注入跨句/跨段/跨文档边 |
-| D3 | λ 控制层数而非合并节奏 | `lambda_val < 1e-6: break` 终止条件 → λ 衰减到阈值以下就停止 | λ 值直接决定层次深度，而非调节合并倾向 | 移除该终止条件，改用收敛判定 |
+| D1 | 结构熵 H ≡ 0 | `anchor_granularity="sent"` → 每节点一个唯一 chunk_id → 社区内无分布可言 | λ·H 恒为 0，结构熵惩罚完全不工作 | v5：改为 `"para"` → H > 0 |
+| D2 | 底层图为断裂的句子森林 | 节点是实例级（sentence-scoped），仅有句内共现边 → ~24,858 个连通分量 | Leiden 无法跨句合并，层次结构意义有限 | v5：EdgeSchedule 分 3 级注入跨句/跨段/跨文档边 |
+| D3 | λ 控制层数而非合并节奏 | `lambda_val < 1e-6: break` 终止条件 → λ 衰减到阈值以下就停止 | λ 值直接决定层次深度，而非调节合并倾向 | v5：移除该终止条件，改用收敛判定 |
 
-### 5.2 检索模块潜在 Bug（未修复）
+### 5.2 BottomUp 锚点 Bug（✅ 已在 v8 修复）
 
-**BottomUpRetriever 锚点加权不生效**：
+**问题**：BottomUpRetriever 的 `_entity_chunks` 存储 `entity_title → Set[sent_id]`，但 `text_units` 的 `chunk_id` = `para_id`，格式不匹配导致 ×1.5 锚点加权从未触发。
 
-- `_entity_chunks` 字典存储 `entity_title → Set[sent_id]`（retriever.py L370-L379）
-- 但 `text_units` 中每个 unit 的 `chunk_id` = `para_id`（ingestion.py TextUnit.chunk_id）
-- 锚点匹配时 `chunk_id in anchor_chunk_ids`（L438），sent_id 格式 `xxx-p001-s002` 永远不等于 para_id 格式 `xxx-p001`
-- **结果**：锚点命中的 ×1.5 加权从不触发，BottomUp 退化为纯 TF-IDF
+**v8 修复**：`retriever.py` 中 `_entity_chunks` 现在存储 `para_id`（通过 `re.sub(r"-s\d+$", "", sent_id)` 将 sent_id 截断为 para_id），与 text_units 的 chunk_id 格式一致。
 
-**影响评估**：此 bug 在 v4 实验中已存在，修复后可能改善 bottom-up 检索质量。建议在 v5 实验前修复。
+**验证结果**：v8 实验中 Para-MRR 全 6 组恒定为 0.4275，确认段落级匹配路径已统一生效。
 
 ---
 
-## §6 v5 六组消融实验设计（代码已就绪，尚未运行）
+## §6 v7/v8 六组消融实验（已完成）
 
-来源：`experiments/run_multihop_eval.py` L493-L542
+来源：`graphrag_improved/experiments/run_multihop_eval.py`
 
-| 组号 | 名称 | λ_init | anchor | edge_schedule | cross_doc | intra_doc_merge |
+v8 配置（n=500，429 有效 QA，26289 实体 / 34532 关系）：
+
+| 组号 | 名称 | λ_init | anchor | edge_schedule | cross_doc | PathA |
 |---|---|---|---|---|---|---|
 | [0] | Baseline | 0 | sent | ✗ | — | ✗ |
-| [1] | 仅改锚点 | 1000 | **para** | ✗ | — | ✗ |
-| [2] | 仅分层加边 | 1000 | sent | **✓** | ✗ | ✗ |
-| [3] | 锚点+分层加边 | 1000 | **para** | **✓** | ✗ | ✗ |
-| [4] | 完整方案+Path A | 1000 | **para** | **✓** | ✗ | **✓** (w=0.5) |
-| [5] | 完整方案+跨文档 | 1000 | **para** | **✓** | **✓** | **✓** (w=0.5) |
+| [1] | EdgeSchedule only | 0 | **para** | **✓** | ✗ | ✗ |
+| [2] | Weak constraint | 0.001 | **para** | **✓** | ✗ | ✗ |
+| [3] | Med constraint (推荐) | 0.003 | **para** | **✓** | ✗ | ✗ |
+| [4] | Weak+PathA | 0.001 | **para** | **✓** | ✗ | **✓** |
+| [5] | Weak+CrossDoc+PathA | 0.001 | **para** | **✓** | **✓** | **✓** |
 
-**消融逻辑**：[0]→[1] 验证锚点粒度影响；[0]→[2] 验证边注入影响；[3] 验证两者叠加；[4] 增加文档内 Path A；[5] 增加跨文档边。
+**核心结果**：所有 6 组 MRR 95% CI 完全重叠（约 [0.403–0.485]），检索质量无统计显著差异；avg_H 随 λ 单调递减（0.137→0.089）；Para-MRR 全组恒定 0.4275。
 
 **运行命令**：
 
 ```bash
-cd /Users/ttung/Desktop/个人学习/graphrag_improved
-python -m experiments.run_multihop_eval --n-qa 200 --use-spacy --groups 0,1,2,3,4,5
+cd /Users/ttung/Desktop/个人学习/SP-GraphRAG/graphrag_improved
+python -m experiments.run_multihop_eval --data-dir ../data/multihop_rag --n-qa 500 --output-dir experiments/results_v8
 ```
 
 ---
@@ -394,15 +393,13 @@ graphrag_improved/
 │   └── evaluator.py              # Evaluator + RetrievalMetrics + CommunityMetrics
 ├── experiments/
 │   ├── run_multihop_eval.py      # 消融实验主脚本（RunConfig + 6 组配置）
-│   └── results/                  # 实验结果 JSON
+│   ├── results_v7/               # v7 实验结果 (n=200)
+│   └── results_v8/               # v8 实验结果 (n=500, 当前)
 ├── baselines/
 │   └── eval_results/             # Naive RAG / GraphRAG Official 结果
 ├── config.yaml                   # 默认配置（v5 参数已就绪）
-├── README.md                     # 项目概述（面向人类阅读）
-├── PROJECT_STATUS.md             # 详细实验数据与版本历史
-├── PROJECT_PLAN.md               # 项目计划与路线图
-├── CHANGELOG.md                  # 版本变更日志
-└── REFACTOR_PROMPT.md            # 重构提示词（面向 LLM 辅助开发）
+├── README.md                   # 项目概述（面向人类阅读）
+└── docs/archive/                 # 历史文档归档（CHANGELOG, PROJECT_STATUS 等）
 ```
 
 ---

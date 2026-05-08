@@ -76,7 +76,8 @@ from graphrag_improved.data.ingestion import (
     document_to_text_units,
 )
 from graphrag_improved.evaluation.evaluator import (
-    CommunityMetrics, Evaluator, QAPair as EvalQAPair, RetrievalMetrics,
+    BootstrapCI, CommunityMetrics, Evaluator, ParagraphHitMetrics,
+    QAPair as EvalQAPair, RetrievalMetrics,
 )
 from graphrag_improved.experiments.data_loader import (
     MultiHopDataset, corpus_to_text_units, load_multihop_dataset,
@@ -251,15 +252,20 @@ class RunConfig:
     seed: int = 42
     top_k_communities: int = 5
     top_k_chunks: int = 5
-    # v5 新增：锚点粒度（"sent" = v4 兼容，"para" = v5 默认）
+    # 锚点粒度（"sent" = v4 兼容，"para" = v5 默认）
     anchor_granularity: str = "para"
-    # v5 新增：是否使用分层加边
+    # 是否使用分层加边
     use_edge_schedule: bool = False
-    # v5 新增：EdgeSchedule 是否包含跨文档边
+    # EdgeSchedule 是否包含跨文档边
     edge_schedule_cross_doc: bool = True
     # 路径A：文档内实体消解
     intra_doc_merging: bool = False
     intra_doc_edge_weight: float = 0.5
+    # 检索模式（控制对照实验变量隔离）
+    # "topdown_only"  : 仅社区导航，复现官方 GraphRAG 检索行为
+    # "bottomup_only" : 仅 TF-IDF 段落检索
+    # "uretrieval"    : 双路径融合（完整 SP-GraphRAG，默认）
+    retrieval_mode: str = "uretrieval"
 
 
 @dataclass
@@ -267,6 +273,8 @@ class RunResult:
     config: RunConfig
     community_metrics: CommunityMetrics
     retrieval_metrics: RetrievalMetrics
+    paragraph_metrics: ParagraphHitMetrics
+    ci_results: Dict[str, BootstrapCI]   # bootstrap 95% CI
     elapsed_seconds: float
     num_entities: int
     num_relationships: int
@@ -287,9 +295,10 @@ def run_one(
     t0 = time.time()
 
     if verbose:
-        print(f"\n{'─'*55}")
-        print(f"  实验：{cfg.name}  (λ={cfg.lambda_init}, anchor={cfg.anchor_granularity})")
-        print(f"{'─'*55}")
+        print(f"\n{'─'*60}")
+        print(f"  实验：{cfg.name}")
+        print(f"  λ={cfg.lambda_init}  anchor={cfg.anchor_granularity}  mode={cfg.retrieval_mode}")
+        print(f"{'─'*60}")
 
     # 社区检测
     if verbose:
@@ -342,10 +351,23 @@ def run_one(
         entities_df=entities_df,
         top_k_communities=cfg.top_k_communities,
         top_k_chunks=cfg.top_k_chunks,
+        retrieval_mode=cfg.retrieval_mode,
     )
     evaluator = Evaluator()
     community_metrics = evaluator.evaluate_community_quality(communities_df, relationships_df)
-    retrieval_metrics = evaluator.evaluate_retrieval(eval_qa, retriever, k_values=[1, 3, 5, 10])
+
+    # A2：带 bootstrap CI 的检索评估（全量实验时提供统计显著性）
+    retrieval_metrics, ci_results = evaluator.evaluate_retrieval_with_ci(
+        eval_qa, retriever, k_values=[1, 3, 5, 10], n_bootstrap=1000
+    )
+    # 补全 evaluate_retrieval_with_ci 未填充的 K 值
+    full_metrics = evaluator.evaluate_retrieval(eval_qa, retriever, k_values=[1, 3, 5, 10])
+    retrieval_metrics = full_metrics   # 用完整版覆盖，CI 单独保留
+
+    # A3：段落级精准度
+    paragraph_metrics = evaluator.evaluate_paragraph_hit(
+        eval_qa, retriever, k_values=[1, 3, 5, 10]
+    )
 
     elapsed = time.time() - t0
     if verbose:
@@ -353,14 +375,22 @@ def run_one(
               f"P@5={retrieval_metrics.precision_at_k.get(5,0):.4f}  "
               f"NDCG@10={retrieval_metrics.ndcg_at_k.get(10,0):.4f}  "
               f"({time.time()-t2:.1f}s)")
+        print(f"        Para-Hit@5={paragraph_metrics.paragraph_hit_at_k.get(5,0):.4f}  "
+              f"Para-MRR={paragraph_metrics.mrr_paragraph:.4f}")
         print(f"        Level0 纯净率={community_metrics.level0_purity_rate:.2%}  "
               f"平均结构熵={community_metrics.avg_structural_entropy:.4f}")
+        if ci_results:
+            mrr_ci = ci_results.get("mrr")
+            if mrr_ci:
+                print(f"        MRR 95%CI=[{mrr_ci.ci_lower:.4f}, {mrr_ci.ci_upper:.4f}]")
         print(f"  总耗时：{elapsed:.1f}s")
 
     return RunResult(
         config=cfg,
         community_metrics=community_metrics,
         retrieval_metrics=retrieval_metrics,
+        paragraph_metrics=paragraph_metrics,
+        ci_results=ci_results,
         elapsed_seconds=elapsed,
         num_entities=len(entities_df),
         num_relationships=len(relationships_df),
@@ -500,55 +530,88 @@ def run_experiment(
         print("  [警告] 未抽取到任何实体，请检查 spaCy 安装")
 
     # ── 4. 六组消融实验 ──────────────────────────────────────────
+    # ── 实验组设计（v8：变量隔离对照）──────────────────────────────
+    #
+    # 对照逻辑（每次只改一个变量）：
+    #   [A] → [B0] : 加 EdgeSchedule，社区结构变化，检索方式不变
+    #   [B0] → [B3]: 加 λ 约束，验证结构熵效果（纯净），检索方式不变
+    #   [B3] → [C3]: 加 BottomUp 路径，验证双轨检索额外贡献
+    #   [A]  → [C3]: 整体 SP-GraphRAG 综合效果
+    #   [A]  → [D] : 仅 BottomUp 路径（段落检索基线，不依赖社区）
+    #
     all_configs = [
+        # ── 单变量对照组（topdown_only，复现官方 GraphRAG 检索） ──
         RunConfig(
-            name="[0] Baseline (lambda=0, sent, no ES)",
+            name="[A] GraphRAG-replica (Leiden, TopDown)",
             lambda_init=0.0,
             anchor_granularity="sent",
             use_edge_schedule=False,
             intra_doc_merging=False,
+            retrieval_mode="topdown_only",
         ),
         RunConfig(
-            name="[1] EdgeSchedule only (lambda=0, para)",
+            name="[B0] +EdgeSchedule (λ=0, TopDown)",
             lambda_init=0.0,
             anchor_granularity="para",
             use_edge_schedule=True,
             edge_schedule_cross_doc=False,
             intra_doc_merging=False,
+            retrieval_mode="topdown_only",
         ),
         RunConfig(
-            name="[2] Weak constraint (lambda=0.001, para+ES)",
+            name="[B1] +Weak λ=0.001 (TopDown)",
             lambda_init=0.001,
             anchor_granularity="para",
             use_edge_schedule=True,
             edge_schedule_cross_doc=False,
             intra_doc_merging=False,
+            retrieval_mode="topdown_only",
         ),
         RunConfig(
-            name="[3] Med constraint (lambda=0.003, para+ES)",
+            name="[B3] +Med λ=0.003 (TopDown)",
             lambda_init=0.003,
             anchor_granularity="para",
             use_edge_schedule=True,
             edge_schedule_cross_doc=False,
             intra_doc_merging=False,
+            retrieval_mode="topdown_only",
         ),
+        # ── 双路径融合组（uretrieval，完整 SP-GraphRAG） ──
         RunConfig(
-            name="[4] Weak+PathA (lambda=0.001, para+ES+PathA)",
-            lambda_init=0.001,
+            name="[C0] +EdgeSchedule (λ=0, U-Retrieval)",
+            lambda_init=0.0,
             anchor_granularity="para",
             use_edge_schedule=True,
             edge_schedule_cross_doc=False,
-            intra_doc_merging=True,
-            intra_doc_edge_weight=0.5,
+            intra_doc_merging=False,
+            retrieval_mode="uretrieval",
         ),
         RunConfig(
-            name="[5] Weak+CrossDoc (lambda=0.001, para+ES+CrossDoc+PathA)",
-            lambda_init=0.001,
+            name="[C3] +Med λ=0.003 (U-Retrieval) [推荐]",
+            lambda_init=0.003,
             anchor_granularity="para",
             use_edge_schedule=True,
-            edge_schedule_cross_doc=True,
-            intra_doc_merging=True,
-            intra_doc_edge_weight=0.5,
+            edge_schedule_cross_doc=False,
+            intra_doc_merging=False,
+            retrieval_mode="uretrieval",
+        ),
+        # ── 纯段落检索基线（bottomup_only，不依赖社区结构） ──
+        RunConfig(
+            name="[D] BottomUp-only (TF-IDF para, no community)",
+            lambda_init=0.0,
+            anchor_granularity="sent",
+            use_edge_schedule=False,
+            intra_doc_merging=False,
+            retrieval_mode="bottomup_only",
+        ),
+        # ── 历史对照组（保持与 v7 实验可比性） ──
+        RunConfig(
+            name="[V7] v7-replica (λ=0.003, U-Retrieval, sent-anchor)",
+            lambda_init=0.003,
+            anchor_granularity="sent",
+            use_edge_schedule=False,
+            intra_doc_merging=False,
+            retrieval_mode="uretrieval",
         ),
     ]
 
@@ -581,9 +644,20 @@ def run_experiment(
 def _result_to_dict(r: RunResult) -> dict:
     rm = r.retrieval_metrics
     cm = r.community_metrics
+    pm = r.paragraph_metrics
+    ci = r.ci_results or {}
+
+    def _ci_dict(key: str) -> dict:
+        c = ci.get(key)
+        if c is None:
+            return {}
+        return {"mean": c.mean, "ci_lower": round(c.ci_lower, 4),
+                "ci_upper": round(c.ci_upper, 4), "n": c.n_samples}
+
     return {
         "name": r.config.name,
         "lambda_init": r.config.lambda_init,
+        "retrieval_mode": r.config.retrieval_mode,
         "spacy_available": SPACY_AVAILABLE,
         "num_entities": r.num_entities,
         "num_relationships": r.num_relationships,
@@ -596,7 +670,7 @@ def _result_to_dict(r: RunResult) -> dict:
         "level0_purity_rate": round(cm.level0_purity_rate, 4),
         "avg_community_size": round(cm.avg_community_size, 2),
         "entropy_by_level": {str(k): round(v, 4) for k, v in cm.entropy_by_level.items()},
-        # 检索质量
+        # 文档级检索质量
         "mrr": round(rm.mrr, 4),
         "precision_at_1": round(rm.precision_at_k.get(1, 0), 4),
         "precision_at_3": round(rm.precision_at_k.get(3, 0), 4),
@@ -608,6 +682,17 @@ def _result_to_dict(r: RunResult) -> dict:
         "ndcg_at_5": round(rm.ndcg_at_k.get(5, 0), 4),
         "ndcg_at_10": round(rm.ndcg_at_k.get(10, 0), 4),
         "num_queries": rm.num_queries,
+        # A3：段落级精准度
+        "para_mrr": round(pm.mrr_paragraph, 4),
+        "para_hit_at_1": round(pm.paragraph_hit_at_k.get(1, 0), 4),
+        "para_hit_at_3": round(pm.paragraph_hit_at_k.get(3, 0), 4),
+        "para_hit_at_5": round(pm.paragraph_hit_at_k.get(5, 0), 4),
+        "para_hit_at_10": round(pm.paragraph_hit_at_k.get(10, 0), 4),
+        # A2：Bootstrap 95% CI
+        "ci_mrr": _ci_dict("mrr"),
+        "ci_p5": _ci_dict("p@5"),
+        "ci_r5": _ci_dict("r@5"),
+        "ci_ndcg10": _ci_dict("ndcg@10"),
     }
 
 
@@ -681,7 +766,7 @@ def _save_and_print_multi(
     sep = "=" * max(total_width, 80)
 
     print("\n" + sep)
-    print("  MultiHop-RAG 消融实验结果 (v5)")
+    print("  MultiHop-RAG 消融实验结果 (v8 — 变量隔离对照设计)")
     print(f"  QA 对：{valid_qa} 条有效  |  切句：{'spaCy' if SPACY_AVAILABLE else '正则降级'}")
     print(sep)
 
@@ -713,7 +798,7 @@ def _save_and_print_multi(
     def _sep_row() -> None:
         print("  " + "─" * (len(header) - 2))
 
-    # 检索质量
+    # 文档级检索质量
     _fmt_row("MRR",           "mrr")
     _fmt_row("Precision@1",   "precision_at_1")
     _fmt_row("Precision@3",   "precision_at_3")
@@ -724,6 +809,13 @@ def _save_and_print_multi(
     _fmt_row("NDCG@5",        "ndcg_at_5")
     _fmt_row("NDCG@10",       "ndcg_at_10")
     _sep_row()
+    # A3：段落级精准度
+    _fmt_row("Para-MRR",      "para_mrr")
+    _fmt_row("Para-Hit@1",    "para_hit_at_1")
+    _fmt_row("Para-Hit@3",    "para_hit_at_3")
+    _fmt_row("Para-Hit@5",    "para_hit_at_5")
+    _fmt_row("Para-Hit@10",   "para_hit_at_10")
+    _sep_row()
     # 社区质量
     _fmt_row("模块度 Q",       "modularity")
     _fmt_row("平均结构熵",      "avg_structural_entropy")
@@ -732,6 +824,14 @@ def _save_and_print_multi(
     _fmt_row("层次数量",        "num_levels",       fmt="int")
     _fmt_row("实体数量",        "num_entities",     fmt="int")
     _fmt_row("关系数量",        "num_relationships", fmt="int")
+
+    # A2：打印 Bootstrap CI（仅对第一组和推荐组）
+    print("\n  Bootstrap 95% CI（MRR）：")
+    for d in dicts:
+        ci = d.get("ci_mrr", {})
+        if ci:
+            name_short = d["name"][:40]
+            print(f"    {name_short:<42} [{ci.get('ci_lower','?'):.4f}, {ci.get('ci_upper','?'):.4f}]  n={ci.get('n','?')}")
 
     print(sep)
     print(f"\n  结果已保存：{result_path}")
@@ -764,7 +864,7 @@ def main():
                         help="数据集目录")
     parser.add_argument("--n-qa", type=int, default=200,
                         help="使用的 QA 对数量（默认 200，None=全量）")
-    parser.add_argument("--output-dir", default="./experiments/results",
+    parser.add_argument("--output-dir", default="./experiments/results_v7",
                         help="结果保存目录")
     parser.add_argument("--question-type", default=None,
                         choices=["inference_query", "comparison_query",
