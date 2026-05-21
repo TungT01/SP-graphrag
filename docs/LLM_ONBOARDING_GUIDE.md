@@ -19,11 +19,11 @@
 
 | 文件 | 作用 | 必须 |
 |---|---|---|
-| `LLM_REFERENCE.md` | 单一权威参考：公式、API、数据、Bug、修复方案 | ✅ |
-| `config.yaml` | 全部配置参数，含 v5 新增字段 | ✅ |
+| `docs/LLM_REFERENCE.md` | 单一权威参考：公式、API、模块、最新实验数字 | ✅ |
+| `docs/EXPERIMENT_RESULTS.md` | 所有实验结果权威记录（v7-v11b+E3） | ✅ |
+| `config.yaml` | 全部配置参数 | ✅ |
 | `constrained_leiden/__init__.py` | 公开 API 清单，理解模块边界 | ✅ |
-| `experiments/results/multihop_results_n200.json` | v4 四组实验原始数据 | ✅ |
-| `baselines/eval_results/n200/naive_rag_eval_results.json` | Naive RAG 对照基线 | ✅ |
+| `experiments/results_v11b/multihop_results_n1000.json` | v11b 核心实验结果（n=881，当前最终数据） | ✅ |
 
 ### 第二轮：理解核心算法（~14K token）
 
@@ -41,20 +41,20 @@
 | `constrained_leiden/graphrag_workflow.py` | 主入口，图构建 + 调用链 | 需要改接口时 |
 | `extraction/extractor.py` | 实体/关系抽取 | 需要改抽取逻辑时 |
 | `data/ingestion.py` | 文档→段落→句子切分 | 需要改数据流时 |
-| `retrieval/retriever.py` | U-Retrieval 检索 | 需要修锚点 Bug 时 |
-| `evaluation/evaluator.py` | 评估指标计算 | 需要加新指标时 |
-| `experiments/run_multihop_eval.py` | 实验脚本 + 6 组消融配置 | 需要跑实验时 |
+| `retrieval/retriever.py` | URetriever（TF-IDF/向量，6 种模式） | 需要改检索时 |
+| `summarization/summarizer.py` | LLM 社区摘要生成（含本地缓存） | 需要改摘要时 |
+| `evaluation/evaluator.py` | 检索评估（MRR/P@K + Bootstrap CI） | 需要加检索指标时 |
+| `evaluation/qa_evaluator.py` | 端到端 QA 评估（EM/F1，需 LLM） | 需要 QA 评估时 |
+| `evaluation/summary_quality_evaluator.py` | 摘要质量评估（LLM 打分） | 需要摘要质量分析时 |
+| `experiments/run_multihop_eval.py` | 主实验脚本（4 组向量检索配置） | 需要跑实验时 |
 
 ### 不要喂的文件
 
 | 文件 | 原因 |
 |---|---|
-| `README.md` | 80% 内容被 LLM_REFERENCE.md 覆盖 |
-| `PROJECT_STATUS.md` | 实验数据已在 LLM_REFERENCE.md 中精炼 |
-| `PROJECT_PLAN.md` | 规划文档，与代码现状有偏差 |
-| `CHANGELOG.md` | 版本历史已在 LLM_REFERENCE.md §1.7 总结 |
-| `REFACTOR_PROMPT.md` | v5 代码已实现其指令，内容过时 |
 | `pipeline_config.py` | config.yaml 解析器，无独占信息 |
+| `docs/archive/*.md` | 均为 v5 时代过时文档，已归档 |
+| `research-v1-archive/` | v1 论文草稿，已被 v2 取代 |
 
 ---
 
@@ -68,22 +68,21 @@
 
 我会给你 5 个文件。请按以下顺序阅读：
 
-1. LLM_REFERENCE.md — 这是项目的单一权威参考文档，所有数字和 API 以它为准
-2. config.yaml — 项目的默认配置
-3. constrained_leiden/__init__.py — 核心模块的公开 API 清单
-4. multihop_results_n200.json — v4 四组消融实验的原始结果
-5. naive_rag_eval_results.json — Naive RAG 基线对照
+1. docs/LLM_REFERENCE.md — 单一权威参考，所有数字和 API 以它为准
+2. docs/EXPERIMENT_RESULTS.md — 所有实验结果（v7-v11b+E3）
+3. config.yaml — 项目默认配置
+4. constrained_leiden/__init__.py — 核心模块公开 API 清单
+5. experiments/results_v11b/multihop_results_n1000.json — 最终核心实验数据（n=881）
 
 阅读完成后，请回答以下验证问题（不要猜测，如果信息不足请明确说"文档中未提及"）：
 
 Q1: 项目的核心目标函数是什么？写出完整公式和每个符号的含义。
-Q2: v4 实验中结构熵为什么全部为 0？根本原因是什么？
-Q3: v5 针对这个问题做了哪三个修复？分别解决什么问题？
-Q4: 当前系统 MRR 与 Naive RAG 的差距是多少？用精确数字回答。
-Q5: BottomUpRetriever 存在一个锚点匹配 Bug，描述这个 Bug 的机制。
-Q6: EdgeSchedule 在第 2 层注入什么类型的边？默认权重是多少？
-Q7: run_constrained_community_detection 的 edge_schedule 参数是 bool 类型
-    还是 EdgeSchedule 对象？实验脚本中是如何做转换的？
+Q2: 为什么早期实验（v4/v7）中结构熵全部为 0？根本原因链是什么？
+Q3: EdgeSchedule 的权重为什么必须 ≥ 1.0？用量级分析说明。
+Q4: 在向量检索框架下，SP-GraphRAG（B3+VS）比原版 GraphRAG（A+VS）MRR 提升多少？该结论在多大样本下得到验证？
+Q5: 为什么 TF-IDF 框架下约束无效，而向量检索框架下有效？
+Q6: URetriever 支持哪 6 种 retrieval_mode？向量模式的前缀是什么？
+Q7: 传导机制实验（E3b）说明了什么？约束 Leiden 的摘要收益是标准 Leiden 的几倍？
 
 如果你能准确回答全部 7 个问题，说明你已经建立了对项目的全局认知。
 如果有任何问题无法回答或不确定，请指出具体哪个问题以及缺少什么信息。

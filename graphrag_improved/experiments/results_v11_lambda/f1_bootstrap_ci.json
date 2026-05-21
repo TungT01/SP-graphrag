@@ -1,0 +1,47 @@
+{
+  "temporal_query": {
+    "A_mrr": 0.4513,
+    "A_ci": [
+      0.3941,
+      0.5085
+    ],
+    "B_mrr": 0.5456,
+    "B_ci": [
+      0.494,
+      0.5968
+    ],
+    "diff_pct": 20.9,
+    "significant": false,
+    "n": 236
+  },
+  "comparison_query": {
+    "A_mrr": 0.4688,
+    "A_ci": [
+      0.4196,
+      0.5179
+    ],
+    "B_mrr": 0.5193,
+    "B_ci": [
+      0.474,
+      0.5675
+    ],
+    "diff_pct": 10.8,
+    "significant": false,
+    "n": 336
+  },
+  "inference_query": {
+    "A_mrr": 0.4013,
+    "A_ci": [
+      0.3495,
+      0.4547
+    ],
+    "B_mrr": 0.4177,
+    "B_ci": [
+      0.3727,
+      0.4637
+    ],
+    "diff_pct": 4.1,
+    "significant": false,
+    "n": 309
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "e3a_lambda_0.0": {
+    "lambda": 0.0,
+    "avg_H": 0.0,
+    "mrr": 0.4231,
+    "p5": 0.1184,
+    "r5": 0.2494,
+    "ndcg10": 0.2717,
+    "elapsed": 60.7
+  },
+  "e3a_lambda_0.001": {
+    "lambda": 0.001,
+    "avg_H": 0.1149699652138261,
+    "mrr": 0.4503,
+    "p5": 0.1361,
+    "r5": 0.2846,
+    "ndcg10": 0.2988,
+    "elapsed": 91.6
+  },
+  "e3a_lambda_0.003": {
+    "lambda": 0.003,
+    "avg_H": 0.09475875872193774,
+    "mrr": 0.4464,
+    "p5": 0.1277,
+    "r5": 0.2688,
+    "ndcg10": 0.2898,
+    "elapsed": 326.0
+  },
+  "e3a_lambda_0.005": {
+    "lambda": 0.005,
+    "avg_H": 0.08530026461514845,
+    "mrr": 0.4375,
+    "p5": 0.1249,
+    "r5": 0.2632,
+    "ndcg10": 0.2866,
+    "elapsed": 218.6
+  },
+  "e3b_A 标准Leiden": {
+    "label": "A 标准Leiden",
+    "mrr_no_summary": 0.4231,
+    "mrr_with_summary": 0.4347,
+    "gain_pct": 2.8,
+    "elapsed": 28.5
+  },
+  "e3b_B3 约束Leiden": {
+    "label": "B3 约束Leiden",
+    "mrr_no_summary": 0.4464,
+    "mrr_with_summary": 0.4951,
+    "gain_pct": 10.9,
+    "elapsed": 83.9
+  }
+}

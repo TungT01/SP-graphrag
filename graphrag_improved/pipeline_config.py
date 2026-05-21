@@ -63,11 +63,26 @@ class OutputConfig:
 
 
 @dataclass
+class LlmConfig:
+    """LLM 摘要生成配置。enabled=False 时整个摘要步骤跳过。"""
+    enabled: bool = False
+    provider: str = "anthropic"          # anthropic | openai | openai_compatible
+    model: str = "claude-haiku-4-5-20251001"  # 低成本模型，适合批量摘要
+    api_key: str = ""                    # 优先读取，为空时自动从环境变量读取
+    base_url: str = ""                   # openai_compatible 专用（如 Kimi: https://api.moonshot.cn/v1）
+    max_tokens: int = 256                # 每条摘要最大 token 数
+    batch_size: int = 20                 # 并发请求数
+    min_level: int = 2                   # 只对 level >= min_level 的社区生成摘要
+    max_entities_in_prompt: int = 20     # 摘要 prompt 中最多列出的实体数
+
+
+@dataclass
 class PipelineConfig:
     input: InputConfig = field(default_factory=InputConfig)
     extraction: ExtractionConfig = field(default_factory=ExtractionConfig)
     clustering: ClusteringConfig = field(default_factory=ClusteringConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
+    llm: LlmConfig = field(default_factory=LlmConfig)
 
     # 运行时派生属性（不在 yaml 中配置）
     project_root: Path = field(default_factory=Path.cwd)

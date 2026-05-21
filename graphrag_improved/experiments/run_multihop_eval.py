@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from dataclasses import dataclass, field
@@ -79,6 +80,8 @@ from graphrag_improved.evaluation.evaluator import (
     BootstrapCI, CommunityMetrics, Evaluator, ParagraphHitMetrics,
     QAPair as EvalQAPair, RetrievalMetrics,
 )
+from graphrag_improved.evaluation.qa_evaluator import QAMetrics, evaluate_qa_end_to_end
+from graphrag_improved.summarization.summarizer import generate_community_summaries
 from graphrag_improved.experiments.data_loader import (
     MultiHopDataset, corpus_to_text_units, load_multihop_dataset,
 )
@@ -262,10 +265,21 @@ class RunConfig:
     intra_doc_merging: bool = False
     intra_doc_edge_weight: float = 0.5
     # 检索模式（控制对照实验变量隔离）
-    # "topdown_only"  : 仅社区导航，复现官方 GraphRAG 检索行为
-    # "bottomup_only" : 仅 TF-IDF 段落检索
-    # "uretrieval"    : 双路径融合（完整 SP-GraphRAG，默认）
+    # "topdown_only"        : 仅社区导航，TF-IDF（复现官方 GraphRAG 检索行为）
+    # "bottomup_only"       : 仅段落检索，TF-IDF
+    # "uretrieval"          : 双路径融合，TF-IDF
+    # "vector_topdown_only" : 仅社区导航，向量检索（核心对照实验）
+    # "vector_bottomup_only": 仅段落检索，向量检索
+    # "vector_uretrieval"   : 双路径融合，向量检索（完整 SP-GraphRAG）
     retrieval_mode: str = "uretrieval"
+    # 向量检索模型（仅 vector_* 模式生效）
+    embedding_model: str = "all-MiniLM-L6-v2"
+    # 向量 TopDown 最低层级（低层社区太多，跳过）
+    vector_min_level: int = 2
+    # LLM 摘要配置（None = 不生成摘要，TopDown 退化为实体列表）
+    llm_config: Optional[object] = None
+    # 摘要缓存目录（不同社区检测配置共享缓存时使用独立子目录）
+    summary_cache_tag: str = ""
 
 
 @dataclass
@@ -275,6 +289,7 @@ class RunResult:
     retrieval_metrics: RetrievalMetrics
     paragraph_metrics: ParagraphHitMetrics
     ci_results: Dict[str, BootstrapCI]   # bootstrap 95% CI
+    qa_metrics: Optional[QAMetrics]       # 端到端 QA 评估（需 llm_config）
     elapsed_seconds: float
     num_entities: int
     num_relationships: int
@@ -340,6 +355,23 @@ def run_one(
     if verbose:
         print(f"        社区 {len(communities_df)} 个，层次 {num_levels} 层  ({time.time()-t1:.1f}s)")
 
+    # 摘要生成（仅当 llm_config 不为 None 且 retrieval_mode 包含 TopDown 时）
+    if cfg.llm_config is not None and cfg.retrieval_mode not in ("bottomup_only", "vector_bottomup_only"):
+        if verbose:
+            print(f"  [摘要] 生成社区摘要（{cfg.llm_config.provider}/{cfg.llm_config.model}）...")
+        cache_path = None
+        if cfg.summary_cache_tag:
+            cache_dir = Path(".") / "summary_cache"
+            cache_path = str(cache_dir / f"summaries_{cfg.summary_cache_tag}.json")
+        communities_df = generate_community_summaries(
+            communities_df,
+            llm_config=cfg.llm_config,
+            text_units=retrieval_units,
+            entities_df=entities_df,
+            cache_path=cache_path,
+            verbose=verbose,
+        )
+
     # 检索 + 评估
     if verbose:
         print(f"  [2/2] 检索评估（{len(eval_qa)} 条 QA）...")
@@ -352,6 +384,8 @@ def run_one(
         top_k_communities=cfg.top_k_communities,
         top_k_chunks=cfg.top_k_chunks,
         retrieval_mode=cfg.retrieval_mode,
+        embedding_model=cfg.embedding_model,
+        vector_min_level=cfg.vector_min_level,
     )
     evaluator = Evaluator()
     community_metrics = evaluator.evaluate_community_quality(communities_df, relationships_df)
@@ -369,6 +403,20 @@ def run_one(
         eval_qa, retriever, k_values=[1, 3, 5, 10]
     )
 
+    # 端到端 QA 评估（需要 llm_config，仅在向量检索模式下运行以节省成本）
+    qa_metrics = None
+    if cfg.llm_config is not None and cfg.retrieval_mode.startswith("vector_"):
+        if verbose:
+            print(f"  [3/3] 端到端 QA 评估（LLM 生成答案）...")
+        qa_metrics = evaluate_qa_end_to_end(
+            qa_pairs=eval_qa,
+            retriever=retriever,
+            llm_config=cfg.llm_config,
+            max_context_chars=3000,
+            concurrency=5,
+            verbose=verbose,
+        )
+
     elapsed = time.time() - t0
     if verbose:
         print(f"        MRR={retrieval_metrics.mrr:.4f}  "
@@ -383,6 +431,10 @@ def run_one(
             mrr_ci = ci_results.get("mrr")
             if mrr_ci:
                 print(f"        MRR 95%CI=[{mrr_ci.ci_lower:.4f}, {mrr_ci.ci_upper:.4f}]")
+        if qa_metrics:
+            print(f"        EM={qa_metrics.exact_match:.4f}  "
+                  f"F1={qa_metrics.token_f1:.4f}  "
+                  f"ROUGE-L={qa_metrics.rouge_l:.4f}")
         print(f"  总耗时：{elapsed:.1f}s")
 
     return RunResult(
@@ -391,6 +443,7 @@ def run_one(
         retrieval_metrics=retrieval_metrics,
         paragraph_metrics=paragraph_metrics,
         ci_results=ci_results,
+        qa_metrics=qa_metrics,
         elapsed_seconds=elapsed,
         num_entities=len(entities_df),
         num_relationships=len(relationships_df),
@@ -447,6 +500,7 @@ def run_experiment(
     verbose: bool = True,
     use_regex: bool = True,
     groups: Optional[List[int]] = None,
+    llm_config_obj=None,   # LlmConfig 实例，None 时跳过摘要生成
 ) -> List[RunResult]:
     """
     六组消融实验（v5 渐进合并架构）：
@@ -533,85 +587,100 @@ def run_experiment(
     # ── 实验组设计（v8：变量隔离对照）──────────────────────────────
     #
     # 对照逻辑（每次只改一个变量）：
-    #   [A] → [B0] : 加 EdgeSchedule，社区结构变化，检索方式不变
-    #   [B0] → [B3]: 加 λ 约束，验证结构熵效果（纯净），检索方式不变
-    #   [B3] → [C3]: 加 BottomUp 路径，验证双轨检索额外贡献
-    #   [A]  → [C3]: 整体 SP-GraphRAG 综合效果
-    #   [A]  → [D] : 仅 BottomUp 路径（段落检索基线，不依赖社区）
+    #
+    # 第一层：社区检测效果（TopDown only，等价于原版 GraphRAG 框架）
+    #   [A]  → [B3] : 只换社区检测（标准→约束 Leiden），验证结构熵约束的纯效果
+    #
+    # 第二层：摘要质量（加入 LLM 摘要后，TopDown 路径才真正有意义）
+    #   [A+S]  → [B3+S] : 在有 LLM 摘要的条件下重复上述对照——核心 claim 验证
+    #
+    # 第三层：双路径融合
+    #   [B3+S] → [C3+S] : 加 BottomUp，验证双轨检索额外贡献
+    #
+    # 第四层：参照基线
+    #   [D] : 纯 TF-IDF 段落检索（不依赖任何社区结构）
+    #
+    # llm_config = None  → 无摘要（TopDown 退化为实体列表 TF-IDF）
+    # llm_config = LlmConfig(...) → 有 LLM 摘要（需传入 --api-key）
+    #
+    _llm = llm_config_obj  # 由 run_experiment() 传入，None 时跳过摘要
+
+    # ── 实验组设计（v11/E2：向量检索 + λ 消融） ────────────────────
+    #
+    # 核心对照（每次只改一个变量）：
+    #   [A+VS]  → [B1+VS] → [B3+VS] → [B5+VS] : λ 从 0 到 0.005，验证单调性
+    #   [B3+VS] → [C3+VS] : 加 BottomUp 向量路径，验证双路径额外增益
+    #   [D+V]              : 纯段落向量检索，不依赖任何社区
     #
     all_configs = [
-        # ── 单变量对照组（topdown_only，复现官方 GraphRAG 检索） ──
+        # ── λ=0：标准 Leiden 基线（复现原版 GraphRAG 框架）──
         RunConfig(
-            name="[A] GraphRAG-replica (Leiden, TopDown)",
+            name="[A+VS] GraphRAG-replica (λ=0, Vector TopDown, +summary)",
             lambda_init=0.0,
             anchor_granularity="sent",
             use_edge_schedule=False,
             intra_doc_merging=False,
-            retrieval_mode="topdown_only",
+            retrieval_mode="vector_topdown_only",
+            llm_config=_llm,
+            summary_cache_tag="leiden_standard",
         ),
+        # ── λ=0.001：弱约束 ──
         RunConfig(
-            name="[B0] +EdgeSchedule (λ=0, TopDown)",
-            lambda_init=0.0,
-            anchor_granularity="para",
-            use_edge_schedule=True,
-            edge_schedule_cross_doc=False,
-            intra_doc_merging=False,
-            retrieval_mode="topdown_only",
-        ),
-        RunConfig(
-            name="[B1] +Weak λ=0.001 (TopDown)",
+            name="[B1+VS] SP-GraphRAG (λ=0.001, Vector TopDown, +summary)",
             lambda_init=0.001,
             anchor_granularity="para",
             use_edge_schedule=True,
             edge_schedule_cross_doc=False,
             intra_doc_merging=False,
-            retrieval_mode="topdown_only",
+            retrieval_mode="vector_topdown_only",
+            llm_config=_llm,
+            summary_cache_tag="leiden_constrained_001",
         ),
+        # ── λ=0.003：中等约束（当前推荐）──
         RunConfig(
-            name="[B3] +Med λ=0.003 (TopDown)",
+            name="[B3+VS] SP-GraphRAG (λ=0.003, Vector TopDown, +summary) [推荐]",
             lambda_init=0.003,
             anchor_granularity="para",
             use_edge_schedule=True,
             edge_schedule_cross_doc=False,
             intra_doc_merging=False,
-            retrieval_mode="topdown_only",
+            retrieval_mode="vector_topdown_only",
+            llm_config=_llm,
+            summary_cache_tag="leiden_constrained_003",
         ),
-        # ── 双路径融合组（uretrieval，完整 SP-GraphRAG） ──
+        # ── λ=0.005：强约束（接近过强边界）──
         RunConfig(
-            name="[C0] +EdgeSchedule (λ=0, U-Retrieval)",
-            lambda_init=0.0,
+            name="[B5+VS] SP-GraphRAG (λ=0.005, Vector TopDown, +summary)",
+            lambda_init=0.005,
             anchor_granularity="para",
             use_edge_schedule=True,
             edge_schedule_cross_doc=False,
             intra_doc_merging=False,
-            retrieval_mode="uretrieval",
+            retrieval_mode="vector_topdown_only",
+            llm_config=_llm,
+            summary_cache_tag="leiden_constrained_005",
         ),
+        # ── 完整系统：最优 λ + 向量双路径 ──
         RunConfig(
-            name="[C3] +Med λ=0.003 (U-Retrieval) [推荐]",
+            name="[C3+VS] SP-GraphRAG full (λ=0.003, Vector U-Retrieval, +summary)",
             lambda_init=0.003,
             anchor_granularity="para",
             use_edge_schedule=True,
             edge_schedule_cross_doc=False,
             intra_doc_merging=False,
-            retrieval_mode="uretrieval",
+            retrieval_mode="vector_uretrieval",
+            llm_config=_llm,
+            summary_cache_tag="leiden_constrained_003",
         ),
-        # ── 纯段落检索基线（bottomup_only，不依赖社区结构） ──
+        # ── 纯向量段落检索参照（不依赖社区）──
         RunConfig(
-            name="[D] BottomUp-only (TF-IDF para, no community)",
+            name="[D+V] Vector BottomUp-only (no community)",
             lambda_init=0.0,
             anchor_granularity="sent",
             use_edge_schedule=False,
             intra_doc_merging=False,
-            retrieval_mode="bottomup_only",
-        ),
-        # ── 历史对照组（保持与 v7 实验可比性） ──
-        RunConfig(
-            name="[V7] v7-replica (λ=0.003, U-Retrieval, sent-anchor)",
-            lambda_init=0.003,
-            anchor_granularity="sent",
-            use_edge_schedule=False,
-            intra_doc_merging=False,
-            retrieval_mode="uretrieval",
+            retrieval_mode="vector_bottomup_only",
+            llm_config=_llm,   # 需要 LLM 生成答案以获取 EM/F1
         ),
     ]
 
@@ -693,6 +762,10 @@ def _result_to_dict(r: RunResult) -> dict:
         "ci_p5": _ci_dict("p@5"),
         "ci_r5": _ci_dict("r@5"),
         "ci_ndcg10": _ci_dict("ndcg@10"),
+        # 端到端 QA 评估
+        **(r.qa_metrics.to_dict() if r.qa_metrics else {
+            "exact_match": None, "token_f1": None, "rouge_l": None,
+        }),
     }
 
 
@@ -875,7 +948,20 @@ def main():
     parser.add_argument("--use-spacy", action="store_true",
                         help="使用 spaCy 切句（精确但慢，默认使用正则快速切句）")
     parser.add_argument("--groups", default=None,
-                        help="只运行指定组别，逗号分隔（如 '0,1,3'），默认运行全部六组")
+                        help="只运行指定组别，逗号分隔（如 '0,1,3'），默认运行全部")
+    parser.add_argument("--with-summary", action="store_true",
+                        help="启用 LLM 摘要生成")
+    parser.add_argument("--provider", default="anthropic",
+                        choices=["anthropic", "openai", "openai_compatible", "kimi"],
+                        help="LLM provider（默认 anthropic；kimi 是 openai_compatible 的快捷别名）")
+    parser.add_argument("--api-key", default=None,
+                        help="API key（也可通过环境变量 ANTHROPIC_API_KEY / OPENAI_API_KEY / MOONSHOT_API_KEY 设置）")
+    parser.add_argument("--base-url", default=None,
+                        help="OpenAI 兼容接口的 base URL（kimi: https://api.moonshot.cn/v1）")
+    parser.add_argument("--llm-model", default=None,
+                        help="摘要生成模型（默认按 provider 自动选择）")
+    parser.add_argument("--summary-min-level", type=int, default=2,
+                        help="只对 level >= 此值的社区生成摘要（默认 2）")
     args = parser.parse_args()
 
     n_qa = None if args.full else args.n_qa
@@ -885,6 +971,46 @@ def main():
     if args.groups:
         groups = [int(g.strip()) for g in args.groups.split(",") if g.strip().isdigit()]
 
+    # 构建 LlmConfig（若启用摘要）
+    llm_config_obj = None
+    if args.with_summary:
+        from graphrag_improved.pipeline_config import LlmConfig
+
+        # provider 别名解析
+        provider = args.provider.lower()
+        base_url = args.base_url or ""
+        model = args.llm_model
+
+        if provider == "kimi":
+            # Kimi（Moonshot）快捷预设
+            provider = "openai_compatible"
+            base_url = base_url or "https://api.moonshot.cn/v1"
+            model = model or "moonshot-v1-8k"
+            api_key = args.api_key or os.environ.get("MOONSHOT_API_KEY", "")
+        elif provider == "anthropic":
+            model = model or "claude-haiku-4-5-20251001"
+            api_key = args.api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+        elif provider in ("openai", "openai_compatible"):
+            model = model or "gpt-4o-mini"
+            api_key = args.api_key or os.environ.get("OPENAI_API_KEY", "")
+        else:
+            api_key = args.api_key or ""
+
+        if not api_key:
+            print(f"  [警告] --api-key 未设置，摘要生成可能失败")
+
+        llm_config_obj = LlmConfig(
+            enabled=True,
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+            max_tokens=256,
+            batch_size=20,
+            min_level=args.summary_min_level,
+        )
+        print(f"  [摘要] 已启用 LLM 摘要：{provider}/{model}")
+
     run_experiment(
         data_dir=args.data_dir,
         n_qa=n_qa,
@@ -893,6 +1019,7 @@ def main():
         verbose=True,
         use_regex=use_regex,
         groups=groups,
+        llm_config_obj=llm_config_obj,
     )
 
 

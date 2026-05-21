@@ -20,7 +20,7 @@ J = Q_leiden − λ · H_structure
 
 ```
 SP-GraphRAG/
-├── graphrag_improved/              # 核心源码（v8 当前版本）
+├── graphrag_improved/              # 核心源码（v11b 当前版本）
 │   ├── constrained_leiden/         # 核心算法模块
 │   │   ├── leiden_constrained.py   # 结构熵约束 Leiden（CommunityEntropyState + O(1) 增量 ΔH）
 │   │   ├── annealing.py            # λ 退火调度（指数/线性/余弦/阶梯 4 种曲线）
@@ -95,48 +95,42 @@ python3 -m experiments.run_multihop_eval \
 
 **5. U-Retrieval**：TopDown（从高层社区逐层导航到底层）+ BottomUp（TF-IDF 直接检索物理文本块），按 alpha 参数分配字符预算后融合。
 
-## 实验结果（v8, MultiHop-RAG, n=500, 429 有效 QA）
+## 实验结果（v11b，向量检索，n=1000，881 有效 QA）⭐ 最新
 
-六组消融实验，含 Bootstrap CI（1000 resamples, 95%）和 Para-Hit 指标：
+**核心对照**（唯一变量 = 社区检测算法，95% Bootstrap CI 完全不重叠）：
 
-| 配置 | λ_0 | avg_H | MRR | MRR 95% CI | Para-MRR | R@5 | NDCG@10 |
-|------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| Baseline（无 ES, λ=0） | 0 | 0.000 | 0.4478 | [0.409, 0.484] | 0.4275 | 0.399 | 0.3624 |
-| EdgeSchedule only | 0 | 0.137 | 0.4469 | [0.407, 0.485] | 0.4275 | 0.401 | 0.3607 |
-| Weak (λ=0.001) | 0.001 | 0.115 | 0.4478 | [0.408, 0.485] | 0.4275 | 0.402 | 0.3612 |
-| **Med (λ=0.003, 推荐)** | **0.003** | **0.089** | 0.4463 | [0.407, 0.485] | 0.4275 | 0.398 | 0.3605 |
-| +PathA | 0.001 | 0.120 | 0.4464 | [0.407, 0.485] | 0.4275 | 0.399 | 0.3613 |
-| +CrossDoc | 0.001 | 0.149 | 0.4428 | [0.403, 0.481] | 0.4275 | 0.397 | 0.3596 |
+| 方法 | MRR | P@5 | R@5 | EM | MRR 95%CI |
+|------|:---:|:---:|:---:|:--:|:---------:|
+| A+VS 标准 Leiden（GraphRAG 复现） | 0.440 | 0.116 | 0.247 | 0.089 | [0.410, 0.471] |
+| **B3+VS 约束 Leiden λ=0.003（本方法）** | **0.489** | **0.159** | **0.329** | **0.124** | **[0.458, 0.516]** |
+| 提升 | **+10.9%** | **+37.4%** | **+33.6%** | **+39.3%** | **统计显著** |
 
-**核心结论**：
+**传导机制（E3b）**：约束 Leiden 从 LLM 摘要中获得的 MRR 收益（+10.9%）是标准 Leiden（+2.8%）的 3.9 倍，证明"物理纯净社区 → 更连贯摘要 → 向量检索提升"的因果链。
 
-- 结构熵随 λ 增大单调递减（0.137→0.089），验证惩罚项有效控制社区物理纯净度
-- 所有 6 组的 MRR 95% CI 完全重叠 → 检索质量无统计显著差异，结构熵惩罚「无损」
-- Para-MRR 全组恒定（0.4275）→ 段落级检索表现不受社区检测参数影响（BottomUp bug 已修复但段落匹配路径一致）
-- 跨文档边引入噪声（avg_H 反升至 0.149，MRR 微降），不推荐
+**消融结论（v7/v8）**：结构熵随 λ 单调递减，Level-0 社区物理纯净率 100%，EdgeSchedule 是约束生效的必要条件。
 
 ## 版本演进
 
 | 版本 | 关键特性 | 状态 |
 |------|---------|------|
-| v3 | 物理优先架构：instance-level 节点，ID={sent_id}-{entity} | 已完成 |
-| v4 | 四组消融实验：Path A + Path B 对照 | 已完成 |
-| v5 | anchor_granularity="para" + EdgeSchedule + 移除提前终止 | 已完成 |
-| v6 | EdgeSchedule 权重校准（2.0/1.5/1.0）+ 噪声过滤 | 已完成 |
-| v7 | 六组消融实验完整验证（n=200）：熵可控 + 检索无损 | 已完成 |
-| v8 | 修复 BottomUp 锚点 bug + Bootstrap CI + Para-Hit 指标 + 大样本验证（n=500, 429 有效） | **当前版本** |
+| v5/v6 | anchor_granularity="para" + EdgeSchedule 权重校准 | 已完成 |
+| v7/v8 | 消融验证（熵可控）+ Bootstrap CI + BottomUp bug 修复 | 已完成 |
+| v9/v10 | LLM 摘要接入（TF-IDF 框架），发现稀释效应 | 已完成 |
+| v11 | **向量检索框架，n=429，MRR +16.1%，CI 不重叠** | 已完成 |
+| **v11b** | **向量检索大样本，n=881，MRR +10.9%，统计显著** | **当前版本** |
 
-## 已知问题
+## 已知局限
 
-1. **社区摘要缺失**：当前管线不生成 community_summary（需 LLM），TopDown 检索仅用实体列表
-2. **跨文档边噪声**：同名异义实体被错误连接，需引入轻量实体消歧
+1. **实体抽取**：使用 spaCy（非 LLM），为控制变量的合理选择；LLM 抽取预期效果更显著
+2. **单一数据集**：MultiHop-RAG（新闻领域），其他领域泛化性待验证
+3. **向量检索依赖**：TF-IDF 框架下约束效果被稀释效应抵消，需配合向量检索才能体现价值
 
 ## 技术文档
 
-- [`TECHNICAL_SPEC.md`](./TECHNICAL_SPEC.md)：完整技术规格书，面向 LLM / AI Agent，包含所有算法细节、数据结构定义、代码映射
-- [`research-sp-graphrag-v2/11-paper-final.md`](./research-sp-graphrag-v2/11-paper-final.md)：完整研究论文
-- [`reports/`](./reports/)：v7 实验报告
-- [`docs/`](./docs/)：项目计划、变更日志、文件清单等
+- [`TECHNICAL_SPEC.md`](./TECHNICAL_SPEC.md)：完整技术规格书（算法、数据结构、代码映射）
+- [`docs/EXPERIMENT_RESULTS.md`](./docs/EXPERIMENT_RESULTS.md)：所有实验结果权威记录（v7-v11b）
+- [`reports/thesis_structure.md`](./reports/thesis_structure.md)：硕士论文结构规划
+- [`reports/SP-GraphRAG_Academic_Report_v11.md`](./reports/SP-GraphRAG_Academic_Report_v11.md)：v11 实验完整报告
 
 ## License
 

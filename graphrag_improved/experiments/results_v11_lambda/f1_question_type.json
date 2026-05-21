@@ -1,0 +1,30 @@
+{
+  "A+VS (λ=0)": {
+    "temporal_query": {
+      "n": 236,
+      "mrr": 0.4513
+    },
+    "comparison_query": {
+      "n": 336,
+      "mrr": 0.4673
+    },
+    "inference_query": {
+      "n": 309,
+      "mrr": 0.4013
+    }
+  },
+  "B3+VS (λ=0.003)": {
+    "temporal_query": {
+      "n": 236,
+      "mrr": 0.5358
+    },
+    "comparison_query": {
+      "n": 336,
+      "mrr": 0.5027
+    },
+    "inference_query": {
+      "n": 309,
+      "mrr": 0.383
+    }
+  }
+}

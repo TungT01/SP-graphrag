@@ -1,0 +1,73 @@
+{
+  "meta": {
+    "n_qa_requested": 500,
+    "valid_qa": 429,
+    "spacy_available": true
+  },
+  "D+V_Vector_BottomUp-only_(no_community)": {
+    "name": "[D+V] Vector BottomUp-only (no community)",
+    "lambda_init": 0.0,
+    "retrieval_mode": "vector_bottomup_only",
+    "spacy_available": true,
+    "num_entities": 26289,
+    "num_relationships": 34532,
+    "num_communities": 35397,
+    "num_levels": 3,
+    "elapsed_seconds": 210.7,
+    "modularity": 0.8006,
+    "avg_structural_entropy": 0.0,
+    "level0_purity_rate": 1.0,
+    "avg_community_size": 2.23,
+    "entropy_by_level": {
+      "0": 0.0,
+      "1": 0.0,
+      "2": 0.0
+    },
+    "mrr": 0.6049,
+    "precision_at_1": 0.4429,
+    "precision_at_3": 0.3395,
+    "precision_at_5": 0.255,
+    "precision_at_10": 0.1275,
+    "recall_at_5": 0.5138,
+    "recall_at_10": 0.5138,
+    "f1_at_5": 0.3358,
+    "ndcg_at_5": 0.4683,
+    "ndcg_at_10": 0.4683,
+    "num_queries": 429,
+    "para_mrr": 0.6049,
+    "para_hit_at_1": 0.4429,
+    "para_hit_at_3": 0.7669,
+    "para_hit_at_5": 0.8555,
+    "para_hit_at_10": 0.8555,
+    "ci_mrr": {
+      "mean": 0.604856254856255,
+      "ci_lower": 0.5696,
+      "ci_upper": 0.6402,
+      "n": 429
+    },
+    "ci_p5": {
+      "mean": 0.25501165501165657,
+      "ci_lower": 0.2415,
+      "ci_upper": 0.2695,
+      "n": 429
+    },
+    "ci_r5": {
+      "mean": 0.513791763791764,
+      "ci_lower": 0.485,
+      "ci_upper": 0.5433,
+      "n": 429
+    },
+    "ci_ndcg10": {
+      "mean": 0.4682684485454972,
+      "ci_lower": 0.4413,
+      "ci_upper": 0.496,
+      "n": 429
+    },
+    "exact_match": 0.352,
+    "token_f1": 0.3534,
+    "rouge_l": 0.3534,
+    "avg_context_chars": 3000.0,
+    "avg_latency_ms": 1597.3
+  },
+  "improvements_vs_baseline": []
+}

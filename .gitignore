@@ -44,6 +44,7 @@ output_run/
 # 实验缓存（体积大，可再生）
 **/cache/
 experiments/results_early/
+graphrag_improved/summary_cache/
 
 # GraphRAG 官方工作区缓存
 baselines/graphrag_official/graphrag_workspace/cache/

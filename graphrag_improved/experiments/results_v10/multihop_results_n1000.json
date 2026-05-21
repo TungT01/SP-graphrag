@@ -1,0 +1,147 @@
+{
+  "meta": {
+    "n_qa_requested": 1000,
+    "valid_qa": 881,
+    "spacy_available": true
+  },
+  "A+S_GraphRAG-replica_(Leiden,_TopDown,_+LLM_summary)": {
+    "name": "[A+S] GraphRAG-replica (Leiden, TopDown, +LLM summary)",
+    "lambda_init": 0.0,
+    "retrieval_mode": "topdown_only",
+    "spacy_available": true,
+    "num_entities": 35300,
+    "num_relationships": 46259,
+    "num_communities": 47557,
+    "num_levels": 3,
+    "elapsed_seconds": 804.15,
+    "modularity": 0.8028,
+    "avg_structural_entropy": 0.0,
+    "level0_purity_rate": 1.0,
+    "avg_community_size": 2.23,
+    "entropy_by_level": {
+      "0": 0.0,
+      "1": 0.0,
+      "2": 0.0
+    },
+    "mrr": 0.4357,
+    "precision_at_1": 0.3814,
+    "precision_at_3": 0.1824,
+    "precision_at_5": 0.1103,
+    "precision_at_10": 0.0552,
+    "recall_at_5": 0.2331,
+    "recall_at_10": 0.2331,
+    "f1_at_5": 0.1478,
+    "ndcg_at_5": 0.2643,
+    "ndcg_at_10": 0.2643,
+    "num_queries": 881,
+    "para_mrr": 0.0,
+    "para_hit_at_1": 0.0,
+    "para_hit_at_3": 0.0,
+    "para_hit_at_5": 0.0,
+    "para_hit_at_10": 0.0,
+    "ci_mrr": {
+      "mean": 0.43567915247824435,
+      "ci_lower": 0.4042,
+      "ci_upper": 0.4665,
+      "n": 881
+    },
+    "ci_p5": {
+      "mean": 0.11032917139614162,
+      "ci_lower": 0.1028,
+      "ci_upper": 0.1183,
+      "n": 881
+    },
+    "ci_r5": {
+      "mean": 0.23306848278471456,
+      "ci_lower": 0.2157,
+      "ci_upper": 0.2505,
+      "n": 881
+    },
+    "ci_ndcg10": {
+      "mean": 0.26425959771631435,
+      "ci_lower": 0.2456,
+      "ci_upper": 0.2837,
+      "n": 881
+    }
+  },
+  "B3+S_SP-GraphRAG_(λ=0.003,_TopDown,_+LLM_summary)_核心": {
+    "name": "[B3+S] SP-GraphRAG (λ=0.003, TopDown, +LLM summary) [核心]",
+    "lambda_init": 0.003,
+    "retrieval_mode": "topdown_only",
+    "spacy_available": true,
+    "num_entities": 35300,
+    "num_relationships": 46259,
+    "num_communities": 136973,
+    "num_levels": 11,
+    "elapsed_seconds": 3199.69,
+    "modularity": 0.8017,
+    "avg_structural_entropy": 0.0771,
+    "level0_purity_rate": 1.0,
+    "avg_community_size": 2.83,
+    "entropy_by_level": {
+      "0": 0.0,
+      "1": 0.0,
+      "2": 0.0005,
+      "3": 0.0022,
+      "4": 0.036,
+      "5": 0.1763,
+      "6": 0.1679,
+      "7": 0.1564,
+      "8": 0.154,
+      "9": 0.1538,
+      "10": 0.1538
+    },
+    "mrr": 0.4172,
+    "precision_at_1": 0.3575,
+    "precision_at_3": 0.185,
+    "precision_at_5": 0.1128,
+    "precision_at_10": 0.0564,
+    "recall_at_5": 0.2334,
+    "recall_at_10": 0.2334,
+    "f1_at_5": 0.1501,
+    "ndcg_at_5": 0.2587,
+    "ndcg_at_10": 0.2587,
+    "num_queries": 881,
+    "para_mrr": 0.0,
+    "para_hit_at_1": 0.0,
+    "para_hit_at_3": 0.0,
+    "para_hit_at_5": 0.0,
+    "para_hit_at_10": 0.0,
+    "ci_mrr": {
+      "mean": 0.4172342035565645,
+      "ci_lower": 0.3873,
+      "ci_upper": 0.4481,
+      "n": 881
+    },
+    "ci_p5": {
+      "mean": 0.11282633371169211,
+      "ci_lower": 0.1044,
+      "ci_upper": 0.1208,
+      "n": 881
+    },
+    "ci_r5": {
+      "mean": 0.23344684071131314,
+      "ci_lower": 0.2159,
+      "ci_upper": 0.2515,
+      "n": 881
+    },
+    "ci_ndcg10": {
+      "mean": 0.2587194206202324,
+      "ci_lower": 0.24,
+      "ci_upper": 0.2789,
+      "n": 881
+    }
+  },
+  "improvements_vs_baseline": [
+    {
+      "vs": "[B3+S] SP-GraphRAG (λ=0.003, TopDown, +LLM summary) [核心]",
+      "mrr": "-4.2%",
+      "precision_at_5": "+2.3%",
+      "ndcg_at_5": "-2.1%",
+      "recall_at_10": "+0.1%",
+      "ndcg_at_10": "-2.1%",
+      "level0_purity_rate": "+0.0%",
+      "avg_structural_entropy": "N/A"
+    }
+  ]
+}

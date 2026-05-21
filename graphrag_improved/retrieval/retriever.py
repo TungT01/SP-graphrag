@@ -31,6 +31,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
+import numpy as np
 import pandas as pd
 
 
@@ -503,7 +504,8 @@ class URetriever:
         - "bottomup_only"  : 仅自底向上（纯 TF-IDF 段落检索基线）
     """
 
-    MODES = {"uretrieval", "topdown_only", "bottomup_only"}
+    MODES = {"uretrieval", "topdown_only", "bottomup_only",
+             "vector_uretrieval", "vector_topdown_only", "vector_bottomup_only"}
 
     def __init__(
         self,
@@ -514,22 +516,40 @@ class URetriever:
         top_k_chunks: int = 5,
         max_context_chars: int = 4000,
         retrieval_mode: str = "uretrieval",
+        embedding_model: str = "all-MiniLM-L6-v2",
+        vector_min_level: int = 2,
     ):
         if retrieval_mode not in self.MODES:
             raise ValueError(f"retrieval_mode must be one of {self.MODES}, got {retrieval_mode!r}")
         self.retrieval_mode = retrieval_mode
         self.max_context_chars = max_context_chars
 
-        self._top_down = TopDownRetriever(
-            communities_df=communities_df,
-            top_k_per_level=max(1, top_k_communities // 2),
-            max_levels=3,
-        )
-        self._bottom_up = BottomUpRetriever(
-            text_units=text_units,
-            entities_df=entities_df,
-            top_k=top_k_chunks,
-        )
+        use_vector = retrieval_mode.startswith("vector_")
+
+        if use_vector:
+            self._top_down = VectorTopDownRetriever(
+                communities_df=communities_df,
+                model_name=embedding_model,
+                top_k_per_level=max(1, top_k_communities // 2),
+                max_levels=3,
+                min_level=vector_min_level,
+            )
+            self._bottom_up = VectorBottomUpRetriever(
+                text_units=text_units,
+                model_name=embedding_model,
+                top_k=top_k_chunks,
+            )
+        else:
+            self._top_down = TopDownRetriever(
+                communities_df=communities_df,
+                top_k_per_level=max(1, top_k_communities // 2),
+                max_levels=3,
+            )
+            self._bottom_up = BottomUpRetriever(
+                text_units=text_units,
+                entities_df=entities_df,
+                top_k=top_k_chunks,
+            )
 
     def retrieve(
         self,
@@ -555,18 +575,24 @@ class URetriever:
             包含双轨命中结果和融合上下文的检索结果
         """
         # 根据 retrieval_mode 决定启用哪条路径
-        # topdown_only：复现官方 GraphRAG，隔离社区检测效果
-        # bottomup_only：纯 TF-IDF 段落基线
-        # uretrieval：双路径融合（完整 SP-GraphRAG）
-        if self.retrieval_mode == "topdown_only":
+        # *_topdown_only : 仅社区导航（复现官方 GraphRAG 检索行为）
+        # *_bottomup_only: 仅段落检索
+        # *_uretrieval   : 双路径融合（完整 SP-GraphRAG）
+        # vector_* 前缀  : 使用向量相似度替代 TF-IDF
+        mode = self.retrieval_mode
+        if mode in ("topdown_only", "vector_topdown_only"):
             top_down_hits = self._top_down.retrieve(query)
             bottom_up_hits = []
-        elif self.retrieval_mode == "bottomup_only":
+        elif mode in ("bottomup_only", "vector_bottomup_only"):
             top_down_hits = []
-            bottom_up_hits = self._bottom_up.retrieve(query, entity_mentions)
-        else:  # uretrieval
+            bottom_up_hits = self._bottom_up.retrieve(
+                query, entity_mentions if mode == "bottomup_only" else None
+            )
+        else:  # uretrieval / vector_uretrieval
             top_down_hits = self._top_down.retrieve(query)
-            bottom_up_hits = self._bottom_up.retrieve(query, entity_mentions)
+            bottom_up_hits = self._bottom_up.retrieve(
+                query, entity_mentions if mode == "uretrieval" else None
+            )
 
         # 融合上下文
         merged_context = self._merge_context(
@@ -664,3 +690,223 @@ class URetriever:
             entities_df=pipeline_result.entities_df,
             **kwargs,
         )
+
+
+# ---------------------------------------------------------------------------
+# 向量检索工具函数
+# ---------------------------------------------------------------------------
+
+def _cosine_similarity_matrix(query_vec: np.ndarray, doc_vecs: np.ndarray) -> np.ndarray:
+    """计算查询向量与文档矩阵的余弦相似度。"""
+    query_norm = np.linalg.norm(query_vec)
+    doc_norms = np.linalg.norm(doc_vecs, axis=1)
+    if query_norm == 0:
+        return np.zeros(len(doc_vecs))
+    valid = doc_norms > 0
+    scores = np.zeros(len(doc_vecs))
+    scores[valid] = (doc_vecs[valid] @ query_vec) / (doc_norms[valid] * query_norm)
+    return scores
+
+
+def _load_embedding_model(model_name: str = "all-MiniLM-L6-v2"):
+    """懒加载 sentence-transformers 模型（全局单例，避免重复加载）。"""
+    global _EMBEDDING_MODEL, _EMBEDDING_MODEL_NAME
+    if "_EMBEDDING_MODEL" not in globals() or _EMBEDDING_MODEL_NAME != model_name:
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ImportError:
+            raise ImportError(
+                "需要安装 sentence-transformers：pip install sentence-transformers"
+            )
+        _EMBEDDING_MODEL = SentenceTransformer(model_name)
+        _EMBEDDING_MODEL_NAME = model_name
+    return _EMBEDDING_MODEL
+
+
+# ---------------------------------------------------------------------------
+# 向量自顶向下检索
+# ---------------------------------------------------------------------------
+
+class VectorTopDownRetriever:
+    """
+    基于向量相似度的自顶向下社区检索器。
+
+    用社区摘要（summary）的句向量替换 TF-IDF，
+    对无摘要的社区退化为实体列表文本向量。
+
+    Parameters
+    ----------
+    communities_df : pd.DataFrame
+        社区表，需包含 level, community_id, title, entity_ids, summary 列
+    model_name : str
+        sentence-transformers 模型名，默认 all-MiniLM-L6-v2
+    top_k_per_level : int
+        每层返回的最大社区数
+    max_levels : int
+        最多导航的层数（从高层往下）
+    min_level : int
+        只索引 level >= min_level 的社区（低层社区数量巨大且无意义）
+    """
+
+    def __init__(
+        self,
+        communities_df: pd.DataFrame,
+        model_name: str = "all-MiniLM-L6-v2",
+        top_k_per_level: int = 3,
+        max_levels: int = 3,
+        min_level: int = 2,
+    ):
+        self.communities_df = communities_df
+        self.top_k_per_level = top_k_per_level
+        self.max_levels = max_levels
+        self.min_level = min_level
+        self._model_name = model_name
+        # {level: (list of community_ids, np.ndarray of embeddings, list of rows)}
+        self._level_index: Dict[int, Tuple[List[int], np.ndarray, List]] = {}
+        self._build_index()
+
+    def _build_index(self) -> None:
+        if self.communities_df.empty:
+            return
+        model = _load_embedding_model(self._model_name)
+
+        level_groups: Dict[int, List] = defaultdict(list)
+        for _, row in self.communities_df.iterrows():
+            lv = int(row["level"])
+            if lv >= self.min_level:
+                level_groups[lv].append(row)
+
+        for level, rows in level_groups.items():
+            texts = []
+            for row in rows:
+                summary = str(row.get("summary", "") or "")
+                if summary:
+                    texts.append(summary)
+                else:
+                    # 退化：用实体列表文本
+                    entity_ids = row.get("entity_ids", []) or []
+                    names = []
+                    for eid in entity_ids[:20]:
+                        name = str(eid).rsplit("-", 1)[-1].replace("_", " ")
+                        names.append(name)
+                    texts.append(str(row.get("title", "")) + " " + " ".join(names))
+
+            embeddings = model.encode(texts, batch_size=256, show_progress_bar=False)
+            comm_ids = [int(row["community_id"]) for row in rows]
+            self._level_index[level] = (comm_ids, embeddings, rows)
+
+    def retrieve(self, query: str) -> List[CommunityHit]:
+        if not self._level_index:
+            return []
+        model = _load_embedding_model(self._model_name)
+        query_vec = model.encode([query], show_progress_bar=False)[0]
+
+        all_levels = sorted(self._level_index.keys(), reverse=True)
+        target_levels = all_levels[:self.max_levels]
+
+        hits: List[CommunityHit] = []
+        seen: Set[int] = set()
+
+        for level in target_levels:
+            comm_ids, embeddings, rows = self._level_index[level]
+            scores = _cosine_similarity_matrix(query_vec, embeddings)
+            top_indices = np.argsort(scores)[::-1][:self.top_k_per_level]
+
+            for idx in top_indices:
+                comm_id = comm_ids[idx]
+                if comm_id in seen:
+                    continue
+                seen.add(comm_id)
+                row = rows[idx]
+
+                entity_ids = row.get("entity_ids", [])
+                if not isinstance(entity_ids, list):
+                    entity_ids = []
+                text_unit_ids = row.get("text_unit_ids", [])
+                if not isinstance(text_unit_ids, list):
+                    text_unit_ids = []
+                doc_ids = row.get("doc_ids", [])
+                if not isinstance(doc_ids, list):
+                    doc_ids = []
+
+                hits.append(CommunityHit(
+                    community_id=comm_id,
+                    level=level,
+                    title=str(row.get("title", "")),
+                    score=float(scores[idx]),
+                    entity_ids=entity_ids,
+                    text_unit_ids=text_unit_ids,
+                    doc_ids=doc_ids,
+                    structural_entropy=float(row.get("structural_entropy", 0.0)),
+                    summary=str(row.get("summary", "")),
+                ))
+
+        hits.sort(key=lambda h: h.score, reverse=True)
+        return hits
+
+
+# ---------------------------------------------------------------------------
+# 向量自底向上检索
+# ---------------------------------------------------------------------------
+
+class VectorBottomUpRetriever:
+    """
+    基于向量相似度的自底向上段落检索器。
+
+    用段落文本的句向量替换 TF-IDF，直接找到语义最相关的段落。
+
+    Parameters
+    ----------
+    text_units : List[dict]
+        文本块列表，每个元素含 chunk_id, text, doc_title, doc_id
+    model_name : str
+        sentence-transformers 模型名，默认 all-MiniLM-L6-v2
+    top_k : int
+        返回的最大文本块数
+    """
+
+    def __init__(
+        self,
+        text_units: List[dict],
+        model_name: str = "all-MiniLM-L6-v2",
+        top_k: int = 5,
+    ):
+        self.text_units = text_units
+        self.top_k = top_k
+        self._model_name = model_name
+        self._chunk_ids: List[str] = []
+        self._embeddings: Optional[np.ndarray] = None
+        self._build_index()
+
+    def _build_index(self) -> None:
+        if not self.text_units:
+            return
+        model = _load_embedding_model(self._model_name)
+        texts = [unit.get("text", "") for unit in self.text_units]
+        self._chunk_ids = [unit.get("chunk_id", "") for unit in self.text_units]
+        self._embeddings = model.encode(
+            texts, batch_size=256, show_progress_bar=False
+        ).astype(np.float32)
+
+    def retrieve(self, query: str, entity_mentions: Optional[List[str]] = None) -> List[TextUnitHit]:
+        if self._embeddings is None or len(self._embeddings) == 0:
+            return []
+        model = _load_embedding_model(self._model_name)
+        query_vec = model.encode([query], show_progress_bar=False)[0].astype(np.float32)
+        scores = _cosine_similarity_matrix(query_vec, self._embeddings)
+        top_indices = np.argsort(scores)[::-1][:self.top_k]
+
+        hits: List[TextUnitHit] = []
+        for idx in top_indices:
+            if scores[idx] <= 0:
+                break
+            unit = self.text_units[idx]
+            hits.append(TextUnitHit(
+                chunk_id=self._chunk_ids[idx],
+                text=unit.get("text", ""),
+                score=float(scores[idx]),
+                doc_title=unit.get("doc_title", ""),
+                doc_id=unit.get("doc_id", ""),
+                sent_id=unit.get("sent_id", self._chunk_ids[idx]),
+            ))
+        return hits

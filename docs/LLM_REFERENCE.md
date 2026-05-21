@@ -2,7 +2,7 @@
 
 > **用途**：这是一份专为 LLM（大语言模型）上下文窗口优化的单一权威参考文档。所有数字、API 签名、数据结构均直接从代码提取，不与其他文档重复。当其他文档与本文档冲突时，以本文档为准。
 >
-> **最后同步代码**：2026-05-08
+> **最后同步代码**：2026-05-11
 >
 > **项目一句话描述**：在 GraphRAG 的社区检测阶段注入结构熵惩罚（J = Q_leiden − λ·H_structure），使同一来源文档的实体倾向于聚入同一社区，从而提升多跳问答的检索召回率。
 
@@ -48,16 +48,17 @@ J = Q_leiden − λ · H_structure
 
 四种曲线可选：`exponential`（默认）、`linear`、`cosine`、`step`。
 
-**1.5 EdgeSchedule 分层加边（v5 新增）**
+**1.5 EdgeSchedule 同名实体边注入（v5 引入，v6 重新校准）**
 
-层次化社区检测过程中，每经过一层聚合，注入更远距离的同名实体边：
+在 Level 0 一次性注入三类同名实体边，打破句内孤岛森林：
 
-| 注入层级 | 边类型 | 默认权重 | 含义 |
+| 边类型 | 匹配条件 | 权重(v6+) | 连接方式 |
 |---|---|---|---|
-| Level 0 | 无新增边 | — | 仅保留原始句内共现边 |
-| Level 1 | intra_paragraph | 0.3 | 同段落跨句子的同名实体 |
-| Level 2 | intra_document | 0.2 | 同文档跨段落的同名实体 |
-| Level 3 | cross_document | 0.1 | 跨文档的同名实体（可关闭） |
+| 段落内跨句子 | 同段落 + 不同句子 + 同名实体 | 2.0 | 链式 |
+| 文档内跨段落 | 同文档 + 不同段落 + 同名实体 | 1.5 | 代表节点链式 |
+| 跨文档 | 不同文档 + 同名实体 | 1.0 | 代表节点链式(上限5) |
+
+> **v6 校准说明**：v5 原设计为分层注入（Level 1/2/3），权重 0.3/0.2/0.1。v6 发现必须在 Level 0 同时注入跨段落边才能产生非零熵，且原权重过小（δQ ≈ w/(2m) 被 λ·δH 压制），故提升至 2.0/1.5/1.0 并改为 Level 0 一次性注入。
 
 **1.6 Path A（文档内链式合并边）**
 
@@ -101,60 +102,52 @@ raw_texts/
   │
   ▼ [graphrag_workflow.py] convert_result_to_communities_df → communities_df (pd.DataFrame)
   │
-  ▼ [retriever.py] URetriever(communities_df, text_units, entities_df)
-  │   ├── TopDownRetriever: 按社区层级 TF-IDF 匹配 query
-  │   └── BottomUpRetriever: 按文本块 TF-IDF 匹配 query（⚠️ 存在锚点 bug，见 §5）
+  ▼ [summarizer.py] generate_community_summaries(communities_df, llm_config) → communities_df（+summary 列）
+  │   - 只为 level >= min_level 的社区调用 LLM
+  │   - 结果缓存到 summary_cache/*.json（key = MD5(实体列表+level)）
+  │
+  ▼ [retriever.py] URetriever(communities_df, text_units, entities_df, retrieval_mode=...)
+  │   ├── TF-IDF 模式: TopDownRetriever + BottomUpRetriever（✅ anchor bug v8 修复）
+  │   └── 向量模式: VectorTopDownRetriever + VectorBottomUpRetriever（all-MiniLM-L6-v2）
+  │       retrieval_mode 支持: uretrieval / topdown_only / bottomup_only（及 vector_* 前缀版本）
   │
   ▼ [evaluator.py] Evaluator.evaluate_retrieval(qa_pairs, retriever) → RetrievalMetrics
-      - 指标: MRR, P@K, Recall@K, F1@K, NDCG@K
+  │   - 指标: MRR, P@K, Recall@K, F1@K, NDCG@K + Bootstrap 95%CI
+  │
+  ▼ [qa_evaluator.py] evaluate_qa_end_to_end(qa_pairs, retriever, llm_config) → QAMetrics
+      - 检索 → LLM 生成答案 → EM / Token F1 / ROUGE-L
 ```
 
 ---
 
-## §3 权威实验数据（唯一数字来源）
+## §3 权威实验数据（索引）
 
-### 3.1 数据集说明
+> 完整实验数据见 `docs/EXPERIMENT_RESULTS.md`（最后更新 2026-05-11）。本节只列关键数字，避免重复。
 
-- **来源**：MultiHop-RAG (COLM 2024)，609 篇新闻文章，2556 条 QA
-- **评估子集**：随机采样 200 条（`--n-qa 200`），剔除无法索引的查询后有效 169 条
-- **实际使用数据**：v4 消融实验四组全部使用同一份抽取结果——47,142 实体 / 61,812 关系（来源文件 `multihop_results_n200.json` 中四组 `num_entities` / `num_relationships` 一致）
-- **历史说明**：项目早期存在两套抽取缓存（`*_full.parquet` 约 60,439 实体和 `*_full_b.parquet` 约 47,142 实体，分别对应原始抽取和噪声过滤后版本），但实际跑通的实验结果均基于后者
+### 3.1 数据集
 
-### 3.2 v4 消融实验（唯一已跑完的实验，来源文件 `experiments/results/multihop_results_n200.json`）
+- **MultiHop-RAG** (COLM 2024)，609 篇新闻文章，2556 条 QA
+- **当前主要评估子集**：n=500 采样，429 条有效 QA（n=1000 采样时 881 条有效）
+- 实体规模：n=500 → 26,289 实体 / 34,532 关系
 
-| 指标 | [0] Baseline λ=0 | [1] Ours λ=1000 | [2] +Path A | [3] +Path A+B |
+### 3.2 核心结论数字（v11b，n=881，向量检索，有摘要）
+
+| 组 | MRR | P@5 | EM | MRR 95%CI |
 |---|---|---|---|---|
-| MRR | 0.3492 | 0.3552 | 0.3552 | 0.3552 |
-| P@1 | 0.2663 | 0.2663 | 0.2663 | 0.2663 |
-| P@5 | 0.1325 | 0.1633 | 0.1633 | 0.1633 |
-| Recall@5 | 0.2648 | 0.3230 | 0.3230 | 0.3230 |
-| NDCG@5 | 0.2347 | 0.2680 | 0.2680 | 0.2680 |
-| NDCG@10 | 0.2737 | 0.2792 | 0.2792 | 0.2792 |
-| 结构熵 | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
-| 社区数 | 22,973 | 63,497 | 63,497 | 63,497 |
-| 层数 | 1 | 3 | 3 | 3 |
-| 实体数 | 47,142 | 47,142 | 47,142 | 47,142 |
-| 关系数 | 61,812 | 61,812 | 61,812 | 61,812 |
-| 模块度 Q | 0.8025 | 0.8025 | 0.8025 | 0.8025 |
-| 运行时间 | 322.8s | 285.6s | — | — |
+| A+VS 标准 Leiden（GraphRAG 复现） | 0.440 | 0.116 | 0.089 | [0.410, 0.471] |
+| **B3+VS 约束 Leiden λ=0.003（本方法）** | **0.489** | **0.159** | **0.124** | **[0.458, 0.516]** |
+| 提升 | +10.9% | +37.4% | +39.3% | CI 完全不重叠 |
 
-### 3.3 Naive RAG Baseline（来源文件 `baselines/eval_results/n200/naive_rag_eval_results.json`）
+来源文件：`experiments/results_v11b/multihop_results_n1000.json`
 
-| MRR | P@5 | Recall@5 | NDCG@5 | NDCG@10 | 有效查询数 |
-|---|---|---|---|---|---|
-| 0.6389 | 0.2568 | 0.5059 | 0.4792 | 0.5216 | 169 |
+### 3.3 传导机制关键数字（E3b，向量检索框架）
 
-### 3.4 GraphRAG Official Baseline（来源文件 `baselines/eval_results/graphrag_full/graphrag_local_eval_results.json`）
+| 系统 | 无摘要 MRR | 有摘要 MRR | 摘要收益 |
+|---|---|---|---|
+| 标准 Leiden | 0.423 | 0.435 | +2.8% |
+| 约束 Leiden λ=0.003 | 0.446 | **0.495** | **+10.9%（是标准的 3.9×）** |
 
-| MRR | P@5 | Recall@5 | NDCG@5 | 有效查询数 |
-|---|---|---|---|---|
-| 0.8784 | 0.3243 | 0.7252 | 0.7486 | 37 |
-
-⚠️ 仅 37 条有效查询（总共 338 条），与其他方法的 169 条有效查询不可比。
-
-### 3.5 差距总结
-
-与 Naive RAG 在相同 169 条查询上对比，Our Method 最佳组 [1]：MRR 落后 44%，P@5 落后 36%，Recall@5 落后 36%。**结构熵惩罚项在 v4 中完全失效（H ≡ 0），改善仅来自 λ > 0 时的层次结构增加。**
+来源文件：`experiments/results_v11_lambda/e3_supplementary.json`
 
 ---
 
@@ -290,16 +283,19 @@ def hierarchical_leiden_constrained(
 EdgeSchedule.build(
     cls,
     entities: pd.DataFrame,
-    intra_para_weight: float = 0.3,
-    intra_doc_weight: float = 0.2,
-    cross_doc_weight: float = 0.1,
+    intra_para_weight: float = 2.0,     # v6+ 校准值（v5 为 0.3）
+    intra_doc_weight: float = 1.5,      # v6+ 校准值（v5 为 0.2）
+    cross_doc_weight: float = 1.0,      # v6+ 校准值（v5 为 0.1）
     max_cross_doc_edges: int = 5,
     include_cross_doc: bool = True,
 ) -> EdgeSchedule
 
-# === 检索器 ===
-# retriever.py L497
+# === 检索器（支持 TF-IDF 和向量两种后端）===
+# retriever.py
 class URetriever:
+    MODES = {"uretrieval", "topdown_only", "bottomup_only",
+             "vector_uretrieval", "vector_topdown_only", "vector_bottomup_only"}
+
     def __init__(
         self,
         communities_df: pd.DataFrame,
@@ -308,14 +304,37 @@ class URetriever:
         top_k_communities: int = 5,
         top_k_chunks: int = 5,
         max_context_chars: int = 4000,
+        retrieval_mode: str = "uretrieval",       # 见 MODES
+        embedding_model: str = "all-MiniLM-L6-v2",  # vector_* 模式使用
+        vector_min_level: int = 2,                # 向量 TopDown 最低层
     ): ...
 
-    def retrieve(
-        self,
-        query: str,
-        entity_mentions: Optional[List[str]] = None,
-        alpha: float = 0.5,       # top_down 与 bottom_up 的混合权重
-    ) -> RetrievalResult
+    def retrieve(self, query: str, entity_mentions=None, alpha=0.5) -> RetrievalResult
+
+# 向量检索后端（当 retrieval_mode 以 "vector_" 开头时自动使用）
+class VectorTopDownRetriever:   # 社区摘要向量检索，无摘要时退化为实体列表向量
+class VectorBottomUpRetriever:  # 段落文本向量检索（替换 TF-IDF BottomUp）
+
+# === QA 端到端评估 ===
+# evaluation/qa_evaluator.py
+def evaluate_qa_end_to_end(
+    qa_pairs: List[QAPair],
+    retriever: URetriever,
+    llm_config: LlmConfig,
+    max_context_chars: int = 3000,
+    concurrency: int = 5,
+) -> QAMetrics
+# QAMetrics 包含：exact_match, token_f1, rouge_l, avg_context_chars, avg_latency_ms
+
+# === 摘要质量评估 ===
+# evaluation/summary_quality_evaluator.py
+def evaluate_summary_quality(
+    samples_a: List[CommunitySample],   # 标准 Leiden 样本
+    samples_b: List[CommunitySample],   # 约束 Leiden 样本
+    llm_config: LlmConfig,
+    concurrency: int = 10,
+) -> Tuple[SummaryQualityMetrics, SummaryQualityMetrics]
+# SummaryQualityMetrics 包含：avg_focus_score(1-5), avg_entity_coverage, avg_num_docs, pct_single_doc
 
 # === 实验运行 ===
 # experiments/run_multihop_eval.py L298
@@ -347,28 +366,30 @@ class URetriever:
 
 ---
 
-## §6 v7/v8 六组消融实验（已完成）
+## §6 当前实验脚本（v11 向量检索，4 组）
 
 来源：`graphrag_improved/experiments/run_multihop_eval.py`
 
-v8 配置（n=500，429 有效 QA，26289 实体 / 34532 关系）：
+当前配置（n=500，429 有效 QA，向量检索模式）：
 
-| 组号 | 名称 | λ_init | anchor | edge_schedule | cross_doc | PathA |
-|---|---|---|---|---|---|---|
-| [0] | Baseline | 0 | sent | ✗ | — | ✗ |
-| [1] | EdgeSchedule only | 0 | **para** | **✓** | ✗ | ✗ |
-| [2] | Weak constraint | 0.001 | **para** | **✓** | ✗ | ✗ |
-| [3] | Med constraint (推荐) | 0.003 | **para** | **✓** | ✗ | ✗ |
-| [4] | Weak+PathA | 0.001 | **para** | **✓** | ✗ | **✓** |
-| [5] | Weak+CrossDoc+PathA | 0.001 | **para** | **✓** | **✓** | **✓** |
+| 组号 | 名称 | λ | 检索模式 | 摘要 |
+|---|---|---|---|---|
+| [0] | A+VS GraphRAG-replica | 0 | vector_topdown_only | ✓ |
+| [1] | B3+VS SP-GraphRAG（核心） | 0.003 | vector_topdown_only | ✓ |
+| [2] | C3+VS 完整系统 | 0.003 | vector_uretrieval | ✓ |
+| [3] | D+V 纯向量段落 | — | vector_bottomup_only | ✗ |
 
-**核心结果**：所有 6 组 MRR 95% CI 完全重叠（约 [0.403–0.485]），检索质量无统计显著差异；avg_H 随 λ 单调递减（0.137→0.089）；Para-MRR 全组恒定 0.4275。
-
-**运行命令**：
-
+**运行命令**（需 Kimi API key）：
 ```bash
 cd /Users/ttung/Desktop/个人学习/SP-GraphRAG/graphrag_improved
-python -m experiments.run_multihop_eval --data-dir ../data/multihop_rag --n-qa 500 --output-dir experiments/results_v8
+python -m experiments.run_multihop_eval \
+    --n-qa 500 --with-summary --provider kimi --api-key KEY \
+    --data-dir ../data/multihop_rag --output-dir experiments/results_v11
+
+# λ 消融（摘要质量实验，零成本）：
+python -m experiments.run_summary_quality_eval \
+    --provider kimi --api-key KEY --n-samples 200 \
+    --output-dir experiments/results_summary_quality_full
 ```
 
 ---
@@ -379,27 +400,38 @@ python -m experiments.run_multihop_eval --data-dir ../data/multihop_rag --n-qa 5
 graphrag_improved/
 ├── constrained_leiden/
 │   ├── graphrag_workflow.py      # 主入口 run_constrained_community_detection
-│   ├── leiden_constrained.py     # hierarchical_leiden_constrained + 移动/聚合逻辑
+│   ├── leiden_constrained.py     # hierarchical_leiden_constrained
 │   ├── edge_scheduler.py         # EdgeSchedule 三级边注入
 │   ├── physical_anchor.py        # PhysicalNode + 结构熵计算
 │   └── annealing.py              # AnnealingConfig + 4 种退火曲线
 ├── extraction/
-│   └── extractor.py              # Entity/Relation 抽取（spaCy NER + 共现）
+│   └── extractor.py              # Entity/Relation 抽取（spaCy NER）
 ├── data/
 │   └── ingestion.py              # Document → TextUnit → SentenceUnit
 ├── retrieval/
-│   └── retriever.py              # URetriever = TopDown + BottomUp
+│   └── retriever.py              # URetriever（6 种检索模式，TF-IDF/向量）
+├── summarization/
+│   └── summarizer.py             # generate_community_summaries（Kimi/OpenAI）
 ├── evaluation/
-│   └── evaluator.py              # Evaluator + RetrievalMetrics + CommunityMetrics
+│   ├── evaluator.py              # 检索评估（MRR/P@K/R@K/NDCG + Bootstrap CI）
+│   ├── qa_evaluator.py           # 端到端 QA 评估（EM/F1，需 LLM）
+│   └── summary_quality_evaluator.py  # 摘要质量评估（主题聚焦度打分）
 ├── experiments/
-│   ├── run_multihop_eval.py      # 消融实验主脚本（RunConfig + 6 组配置）
-│   ├── results_v7/               # v7 实验结果 (n=200)
-│   └── results_v8/               # v8 实验结果 (n=500, 当前)
-├── baselines/
-│   └── eval_results/             # Naive RAG / GraphRAG Official 结果
-├── config.yaml                   # 默认配置（v5 参数已就绪）
-├── README.md                   # 项目概述（面向人类阅读）
-└── docs/archive/                 # 历史文档归档（CHANGELOG, PROJECT_STATUS 等）
+│   ├── run_multihop_eval.py      # 主实验脚本（4 组向量检索，含 QA 评估）
+│   ├── run_summary_quality_eval.py   # 摘要质量对比实验
+│   ├── results_v7/               # v7 消融结果（n=200，TF-IDF）
+│   ├── results_v8/               # v8 结果（n=500，TF-IDF，Bootstrap CI）
+│   ├── results_v8b/              # v8b 变量隔离基准
+│   ├── results_v9/               # v9 LLM 摘要实验（TF-IDF）
+│   ├── results_v11/              # v11 向量检索（n=500）⭐ 核心
+│   ├── results_v11b/             # v11b 向量检索大样本（n=1000）⭐ 核心
+│   └── results_v11_lambda/       # λ 消融 + E3a/E3b 补充实验
+├── summary_cache/
+│   ├── summaries_leiden_standard.json      # λ=0 摘要缓存（15,177 条）
+│   └── summaries_leiden_constrained_003.json  # λ=0.003 摘要缓存（109,122 条）
+├── config.yaml
+├── README.md
+└── docs/archive/                 # 历史文档归档
 ```
 
 ---

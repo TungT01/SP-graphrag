@@ -1,0 +1,17 @@
+{
+  "context_budget": 1744,
+  "b3vs_reference": {
+    "em": 0.1237,
+    "f1": 0.1844,
+    "context": 1744,
+    "source": "v11b n=881"
+  },
+  "dv_at_budget": {
+    "exact_match": 0.3287,
+    "token_f1": 0.3299,
+    "rouge_l": 0.3299,
+    "num_queries": 429,
+    "avg_context_chars": 1744.0,
+    "avg_latency_ms": 3148.1
+  }
+}

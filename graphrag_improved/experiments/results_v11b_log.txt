@@ -1,0 +1,57 @@
+/Users/ttung/Desktop/个人学习/SP-GraphRAG/graphrag_improved/.venv-graphrag/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+Traceback (most recent call last):
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/runpy.py", line 197, in _run_module_as_main
+    return _run_code(code, main_globals, None,
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/runpy.py", line 87, in _run_code
+    exec(code, run_globals)
+  File "/Users/ttung/Desktop/个人学习/SP-GraphRAG/graphrag_improved/experiments/run_multihop_eval.py", line 1003, in <module>
+    main()
+  File "/Users/ttung/Desktop/个人学习/SP-GraphRAG/graphrag_improved/experiments/run_multihop_eval.py", line 990, in main
+    run_experiment(
+  File "/Users/ttung/Desktop/个人学习/SP-GraphRAG/graphrag_improved/experiments/run_multihop_eval.py", line 673, in run_experiment
+    r = run_one(cfg, text_units, retrieval_units, eval_qa,
+  File "/Users/ttung/Desktop/个人学习/SP-GraphRAG/graphrag_improved/experiments/run_multihop_eval.py", line 366, in run_one
+    communities_df = generate_community_summaries(
+  File "/Users/ttung/Desktop/个人学习/SP-GraphRAG/graphrag_improved/summarization/summarizer.py", line 272, in generate_community_summaries
+    client = _make_llm_client(llm_config)
+  File "/Users/ttung/Desktop/个人学习/SP-GraphRAG/graphrag_improved/summarization/summarizer.py", line 156, in _make_llm_client
+    raise ValueError(f"{provider} API key 未设置")
+ValueError: openai_compatible API key 未设置
+  [警告] --api-key 未设置，摘要生成可能失败
+  [摘要] 已启用 LLM 摘要：openai_compatible/moonshot-v1-8k
+
+=================================================================
+  GraphRAG Improved — MultiHop-RAG 六组消融实验 (v5)
+=================================================================
+  切句模式：正则（快速）
+  运行组别：[0, 1]
+
+[1/5] 加载数据集...
+  加载 corpus: ../data/multihop_rag/corpus.json
+  加载 QA 对: ../data/multihop_rag/MultiHopRAG.json
+  ✓ 数据集加载完成：609 篇文章，2556 条 QA 对
+  文章数：609，QA 对：1000（有效：881）
+  问题类型：{'null_query': 119, 'temporal_query': 236, 'comparison_query': 336, 'inference_query': 309}
+
+[2/5] 构建 TextUnit（相关文章 440/609 篇）...
+  [数据] 构建 TextUnit（440/609 篇文章，切句模式：正则（快速））...
+    共 20187 个段落，开始批量切句...
+  [数据] 完成：20187 个段落，44133 个句子  (0.2s)
+
+[3/5] 实体抽取（所有组别共享）...
+  实体 35300 个，关系 46259 条  (238.0s)
+  [缓存] 已保存 n1000
+
+[4/5] 运行 2 组消融实验...
+
+────────────────────────────────────────────────────────────
+  实验：[A+VS] GraphRAG-replica (Leiden, Vector TopDown, +summary)
+  λ=0.0  anchor=sent  mode=vector_topdown_only
+────────────────────────────────────────────────────────────
+  [1/2] 社区检测 (λ=0.0, anchor=sent)...
+        社区 47557 个，层次 3 层  (92.7s)
+  [摘要] 生成社区摘要（openai_compatible/moonshot-v1-8k）...
+  [摘要] 需生成摘要：15177 个社区（跳过 Level-0/1 共 32380 个）
+  [摘要] 模型：openai_compatible/moonshot-v1-8k
+  [摘要] 已加载缓存：15177 条
