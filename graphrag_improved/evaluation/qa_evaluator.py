@@ -286,12 +286,16 @@ def evaluate_qa_end_to_end(
                 rate = len(results) / elapsed if elapsed > 0 else 0
                 print(f"  [QA评估] {len(results)}/{len(valid_qa)}  ({rate:.1f} 条/s)")
 
-            # 每 100 条保存一次缓存
+            # 每 100 条保存一次缓存（先在锁内拷贝快照，避免并发写入冲突）
             if len(results) % 100 == 0:
-                _save_qa_cache(qa_cache, cache_path)
+                with cache_lock:
+                    snapshot = dict(qa_cache)
+                _save_qa_cache(snapshot, cache_path)
 
-    # 最终保存缓存
-    _save_qa_cache(qa_cache, cache_path)
+    # 最终保存缓存（executor 已退出，所有线程已完成，仍用快照保险）
+    with cache_lock:
+        snapshot = dict(qa_cache)
+    _save_qa_cache(snapshot, cache_path)
     if verbose and cache_path:
         api_calls = len(results) - cache_hits
         print(f"  [QA缓存] 命中 {cache_hits} 条，新增 API 调用 {api_calls} 条，已保存 → {cache_path}")
