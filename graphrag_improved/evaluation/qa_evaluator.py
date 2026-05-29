@@ -155,17 +155,24 @@ def _load_qa_cache(cache_path: Optional[str]) -> Dict[str, dict]:
         return {}
     p = Path(cache_path)
     if p.exists():
-        with open(p, "r", encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, ValueError):
+            print(f"  [QA缓存] 文件损坏，已忽略并重建：{p.name}")
+            p.unlink()
     return {}
 
 
 def _save_qa_cache(cache: Dict[str, dict], cache_path: Optional[str]) -> None:
     if not cache_path:
         return
-    Path(cache_path).parent.mkdir(parents=True, exist_ok=True)
-    with open(cache_path, "w", encoding="utf-8") as f:
+    p = Path(cache_path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(cache, f, ensure_ascii=False)
+    tmp.replace(p)  # 原子替换，进程被杀时旧文件保持完整
 
 
 # ---------------------------------------------------------------------------
