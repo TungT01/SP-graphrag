@@ -951,13 +951,13 @@ def main():
                         help="只运行指定组别，逗号分隔（如 '0,1,3'），默认运行全部")
     parser.add_argument("--with-summary", action="store_true",
                         help="启用 LLM 摘要生成")
-    parser.add_argument("--provider", default="anthropic",
-                        choices=["anthropic", "openai", "openai_compatible", "kimi"],
-                        help="LLM provider（默认 anthropic；kimi 是 openai_compatible 的快捷别名）")
+    parser.add_argument("--provider", default="deepseek",
+                        choices=["anthropic", "openai", "openai_compatible", "kimi", "deepseek"],
+                        help="LLM provider（默认 deepseek；kimi/deepseek 是 openai_compatible 的快捷别名）")
     parser.add_argument("--api-key", default=None,
-                        help="API key（也可通过环境变量 ANTHROPIC_API_KEY / OPENAI_API_KEY / MOONSHOT_API_KEY 设置）")
+                        help="API key（也可通过环境变量 ANTHROPIC_API_KEY / OPENAI_API_KEY / DEEPSEEK_API_KEY 设置）")
     parser.add_argument("--base-url", default=None,
-                        help="OpenAI 兼容接口的 base URL（kimi: https://api.moonshot.cn/v1）")
+                        help="OpenAI 兼容接口的 base URL（deepseek: https://api.deepseek.com）")
     parser.add_argument("--llm-model", default=None,
                         help="摘要生成模型（默认按 provider 自动选择）")
     parser.add_argument("--summary-min-level", type=int, default=2,
@@ -981,7 +981,13 @@ def main():
         base_url = args.base_url or ""
         model = args.llm_model
 
-        if provider == "kimi":
+        if provider == "deepseek":
+            # DeepSeek 快捷预设
+            provider = "openai_compatible"
+            base_url = base_url or "https://api.deepseek.com"
+            model = model or "deepseek-v4-flash"
+            api_key = args.api_key or os.environ.get("DEEPSEEK_API_KEY", "")
+        elif provider == "kimi":
             # Kimi（Moonshot）快捷预设
             provider = "openai_compatible"
             base_url = base_url or "https://api.moonshot.cn/v1"

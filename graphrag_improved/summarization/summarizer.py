@@ -155,7 +155,7 @@ def _make_llm_client(llm_config):
         if not key:
             raise ValueError(f"{provider} API key 未设置")
         kwargs = {"api_key": key}
-        # openai_compatible 需要自定义 base_url（如 Kimi: https://api.moonshot.cn/v1）
+        # openai_compatible 需要自定义 base_url（如 DeepSeek: https://api.deepseek.com）
         base_url = getattr(llm_config, "base_url", None)
         if base_url:
             kwargs["base_url"] = base_url

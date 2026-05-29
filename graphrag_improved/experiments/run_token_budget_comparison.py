@@ -31,7 +31,7 @@ from graphrag_improved.pipeline_config import LlmConfig
 def main():
     parser = argparse.ArgumentParser(description="公平 token 预算对比：D+V vs B3+VS")
     parser.add_argument("--api-key", default=None)
-    parser.add_argument("--provider", default="kimi")
+    parser.add_argument("--provider", default="deepseek")
     parser.add_argument("--n-qa", type=int, default=500)
     parser.add_argument("--context-budget", type=int, default=1744,
                         help="上下文长度限制（默认 1744，与 B3+VS 自然上下文相同）")
@@ -40,11 +40,11 @@ def main():
     parser.add_argument("--output-dir", default="experiments/results_v11_lambda")
     args = parser.parse_args()
 
-    api_key = args.api_key or os.environ.get("MOONSHOT_API_KEY", "")
+    api_key = args.api_key or os.environ.get("DEEPSEEK_API_KEY", "")
     llm_config = LlmConfig(
         enabled=True, provider="openai_compatible",
-        model="moonshot-v1-8k", api_key=api_key,
-        base_url="https://api.moonshot.cn/v1",
+        model="deepseek-v4-flash", api_key=api_key,
+        base_url="https://api.deepseek.com",
         max_tokens=128, batch_size=10,
     )
 

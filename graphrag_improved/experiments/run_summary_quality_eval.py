@@ -10,8 +10,8 @@ experiments/run_summary_quality_eval.py
 
 用法：
   python3 -m experiments.run_summary_quality_eval \\
-      --api-key YOUR_KIMI_KEY \\
-      --provider kimi \\
+      --api-key YOUR_DEEPSEEK_KEY \\
+      --provider deepseek \\
       --n-samples 100 \\
       --output-dir experiments/results_summary_quality
 """
@@ -56,8 +56,8 @@ def main():
     parser.add_argument("--max-entities", type=int, default=100,
                         help="社区最大实体数（默认 100，覆盖中大型社区）")
     parser.add_argument("--output-dir", default="experiments/results_summary_quality")
-    parser.add_argument("--provider", default="kimi",
-                        choices=["kimi", "anthropic", "openai", "openai_compatible"])
+    parser.add_argument("--provider", default="deepseek",
+                        choices=["deepseek", "kimi", "anthropic", "openai", "openai_compatible"])
     parser.add_argument("--api-key", default=None)
     parser.add_argument("--llm-model", default=None)
     parser.add_argument("--concurrency", type=int, default=10)
@@ -67,7 +67,12 @@ def main():
     provider = args.provider.lower()
     base_url = ""
     model = args.llm_model
-    if provider == "kimi":
+    if provider == "deepseek":
+        provider = "openai_compatible"
+        base_url = "https://api.deepseek.com"
+        model = model or "deepseek-v4-flash"
+        api_key = args.api_key or os.environ.get("DEEPSEEK_API_KEY", "")
+    elif provider == "kimi":
         provider = "openai_compatible"
         base_url = "https://api.moonshot.cn/v1"
         model = model or "moonshot-v1-8k"

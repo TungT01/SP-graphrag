@@ -69,7 +69,7 @@ class LlmConfig:
     provider: str = "anthropic"          # anthropic | openai | openai_compatible
     model: str = "claude-haiku-4-5-20251001"  # 低成本模型，适合批量摘要
     api_key: str = ""                    # 优先读取，为空时自动从环境变量读取
-    base_url: str = ""                   # openai_compatible 专用（如 Kimi: https://api.moonshot.cn/v1）
+    base_url: str = ""                   # openai_compatible 专用（如 DeepSeek: https://api.deepseek.com）
     max_tokens: int = 256                # 每条摘要最大 token 数
     batch_size: int = 20                 # 并发请求数
     min_level: int = 2                   # 只对 level >= min_level 的社区生成摘要
