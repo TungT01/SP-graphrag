@@ -305,6 +305,7 @@ def run_one(
     entities_df,       # 共享的抽取结果（两个版本复用）
     relationships_df,
     verbose: bool = True,
+    qa_cache_path: Optional[str] = None,
 ) -> RunResult:
     """运行单次实验（只做社区检测 + 评估，抽取结果复用）。"""
     t0 = time.time()
@@ -415,6 +416,7 @@ def run_one(
             max_context_chars=3000,
             concurrency=5,
             verbose=verbose,
+            cache_path=qa_cache_path,
         )
 
     elapsed = time.time() - t0
@@ -692,10 +694,17 @@ def run_experiment(
 
     print(f"\n[4/5] 运行 {len(selected_configs)} 组消融实验...")
 
+    # QA 缓存路径：按模型名区分，同模型跨组共享（context 不同则 miss）
+    qa_cache_path = None
+    if llm_config_obj is not None:
+        model_safe = llm_config_obj.model.replace("/", "_").replace(":", "_")
+        qa_cache_path = str(cache_dir / f"qa_answers_{model_safe}.json")
+
     results: List[RunResult] = []
     for cfg in selected_configs:
         r = run_one(cfg, text_units, retrieval_units, eval_qa,
-                    entities_df, relationships_df, verbose=verbose)
+                    entities_df, relationships_df, verbose=verbose,
+                    qa_cache_path=qa_cache_path)
         results.append(r)
 
     # ── 5. 保存 & 打印结果 ───────────────────────────────────────

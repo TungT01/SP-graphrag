@@ -16,8 +16,11 @@ evaluation/qa_evaluator.py
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
+import threading
 import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -138,6 +141,34 @@ def _generate_answer(
 
 
 # ---------------------------------------------------------------------------
+# QA 缓存工具
+# ---------------------------------------------------------------------------
+
+def _make_qa_cache_key(question: str, context: str, model: str) -> str:
+    """缓存 key：基于 question + context + model，任一变化则 miss。"""
+    raw = f"{question}|||{context[:3000]}|||{model}"
+    return hashlib.md5(raw.encode()).hexdigest()
+
+
+def _load_qa_cache(cache_path: Optional[str]) -> Dict[str, dict]:
+    if not cache_path:
+        return {}
+    p = Path(cache_path)
+    if p.exists():
+        with open(p, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
+def _save_qa_cache(cache: Dict[str, dict], cache_path: Optional[str]) -> None:
+    if not cache_path:
+        return
+    Path(cache_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(cache_path, "w", encoding="utf-8") as f:
+        json.dump(cache, f, ensure_ascii=False)
+
+
+# ---------------------------------------------------------------------------
 # 主评估函数
 # ---------------------------------------------------------------------------
 
@@ -148,6 +179,7 @@ def evaluate_qa_end_to_end(
     max_context_chars: int = 3000,
     concurrency: int = 5,
     verbose: bool = True,
+    cache_path: Optional[str] = None,
 ) -> QAMetrics:
     """
     端到端 QA 评估：检索 → 生成 → 评分。
@@ -183,25 +215,43 @@ def evaluate_qa_end_to_end(
         print(f"  [QA评估] {len(valid_qa)} 条问题，模型={llm_config.provider}/{llm_config.model}")
         print(f"  [QA评估] 并发={concurrency}，上下文上限={max_context_chars} chars")
 
+    # 加载缓存
+    qa_cache = _load_qa_cache(cache_path)
+    cache_lock = threading.Lock()
+    cache_hits = 0
+    if verbose and cache_path:
+        print(f"  [QA缓存] 加载 {len(qa_cache)} 条缓存（{Path(cache_path).name}）")
+
     client = _make_llm_client(llm_config)
     provider = llm_config.provider.lower()
 
     def _process_one(qa) -> QAResult:
+        nonlocal cache_hits
         # 检索上下文
         result = retriever.retrieve(qa.question)
         context = result.merged_context or ""
         if not context:
-            # 退化：直接拼接 bottom_up_hits 的文本
             context = "\n".join(
                 hit.text for hit in result.bottom_up_hits[:5]
             )
         context = context[:max_context_chars]
 
-        # 生成答案
-        predicted, latency = _generate_answer(
-            client, provider, llm_config.model,
-            qa.question, context, max_tokens=128
-        )
+        # 查缓存
+        key = _make_qa_cache_key(qa.question, context, llm_config.model)
+        cached = qa_cache.get(key)
+        if cached:
+            with cache_lock:
+                cache_hits += 1
+            predicted = cached["predicted_answer"]
+            latency = cached.get("latency_ms", 0.0)
+        else:
+            # 调用 LLM
+            predicted, latency = _generate_answer(
+                client, provider, llm_config.model,
+                qa.question, context, max_tokens=128
+            )
+            with cache_lock:
+                qa_cache[key] = {"predicted_answer": predicted, "latency_ms": latency}
 
         # 评分
         em = compute_exact_match(predicted, qa.answer)
@@ -235,6 +285,16 @@ def evaluate_qa_end_to_end(
                 elapsed = time.time() - t0
                 rate = len(results) / elapsed if elapsed > 0 else 0
                 print(f"  [QA评估] {len(results)}/{len(valid_qa)}  ({rate:.1f} 条/s)")
+
+            # 每 100 条保存一次缓存
+            if len(results) % 100 == 0:
+                _save_qa_cache(qa_cache, cache_path)
+
+    # 最终保存缓存
+    _save_qa_cache(qa_cache, cache_path)
+    if verbose and cache_path:
+        api_calls = len(results) - cache_hits
+        print(f"  [QA缓存] 命中 {cache_hits} 条，新增 API 调用 {api_calls} 条，已保存 → {cache_path}")
 
     if not results:
         return QAMetrics()
