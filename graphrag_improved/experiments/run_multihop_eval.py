@@ -280,6 +280,8 @@ class RunConfig:
     llm_config: Optional[object] = None
     # 摘要缓存目录（不同社区检测配置共享缓存时使用独立子目录）
     summary_cache_tag: str = ""
+    # QA 评估上下文长度上限（默认 3000，等预算实验设为 594）
+    qa_max_context_chars: int = 3000
 
 
 @dataclass
@@ -413,7 +415,7 @@ def run_one(
             qa_pairs=eval_qa,
             retriever=retriever,
             llm_config=cfg.llm_config,
-            max_context_chars=3000,
+            max_context_chars=cfg.qa_max_context_chars,
             concurrency=5,
             verbose=verbose,
             cache_path=qa_cache_path,
@@ -503,6 +505,7 @@ def run_experiment(
     use_regex: bool = True,
     groups: Optional[List[int]] = None,
     llm_config_obj=None,   # LlmConfig 实例，None 时跳过摘要生成
+    qa_max_context_chars: int = 3000,
 ) -> List[RunResult]:
     """
     六组消融实验（v5 渐进合并架构）：
@@ -625,6 +628,7 @@ def run_experiment(
             retrieval_mode="vector_topdown_only",
             llm_config=_llm,
             summary_cache_tag="leiden_standard",
+            qa_max_context_chars=qa_max_context_chars,
         ),
         # ── λ=0.001：弱约束 ──
         RunConfig(
@@ -637,6 +641,7 @@ def run_experiment(
             retrieval_mode="vector_topdown_only",
             llm_config=_llm,
             summary_cache_tag="leiden_constrained_001",
+            qa_max_context_chars=qa_max_context_chars,
         ),
         # ── λ=0.003：中等约束（当前推荐）──
         RunConfig(
@@ -649,6 +654,7 @@ def run_experiment(
             retrieval_mode="vector_topdown_only",
             llm_config=_llm,
             summary_cache_tag="leiden_constrained_003",
+            qa_max_context_chars=qa_max_context_chars,
         ),
         # ── λ=0.005：强约束（接近过强边界）──
         RunConfig(
@@ -661,6 +667,7 @@ def run_experiment(
             retrieval_mode="vector_topdown_only",
             llm_config=_llm,
             summary_cache_tag="leiden_constrained_005",
+            qa_max_context_chars=qa_max_context_chars,
         ),
         # ── 完整系统：最优 λ + 向量双路径 ──
         RunConfig(
@@ -673,6 +680,7 @@ def run_experiment(
             retrieval_mode="vector_uretrieval",
             llm_config=_llm,
             summary_cache_tag="leiden_constrained_003",
+            qa_max_context_chars=qa_max_context_chars,
         ),
         # ── 纯向量段落检索参照（不依赖社区）──
         RunConfig(
@@ -682,7 +690,8 @@ def run_experiment(
             use_edge_schedule=False,
             intra_doc_merging=False,
             retrieval_mode="vector_bottomup_only",
-            llm_config=_llm,   # 需要 LLM 生成答案以获取 EM/F1
+            llm_config=_llm,
+            qa_max_context_chars=qa_max_context_chars,
         ),
     ]
 
@@ -694,11 +703,12 @@ def run_experiment(
 
     print(f"\n[4/5] 运行 {len(selected_configs)} 组消融实验...")
 
-    # QA 缓存路径：按模型名区分，同模型跨组共享（context 不同则 miss）
+    # QA 缓存路径：按模型名+上下文长度区分（context 不同则 miss）
     qa_cache_path = None
     if llm_config_obj is not None:
         model_safe = llm_config_obj.model.replace("/", "_").replace(":", "_")
-        qa_cache_path = str(cache_dir / f"qa_answers_{model_safe}.json")
+        ctx_tag = f"_ctx{qa_max_context_chars}" if qa_max_context_chars != 3000 else ""
+        qa_cache_path = str(cache_dir / f"qa_answers_{model_safe}{ctx_tag}.json")
 
     results: List[RunResult] = []
     for cfg in selected_configs:
@@ -971,6 +981,8 @@ def main():
                         help="摘要生成模型（默认按 provider 自动选择）")
     parser.add_argument("--summary-min-level", type=int, default=2,
                         help="只对 level >= 此值的社区生成摘要（默认 2）")
+    parser.add_argument("--qa-max-context-chars", type=int, default=3000,
+                        help="QA 评估传给 LLM 的最大上下文字符数（默认 3000；等预算实验设为 594）")
     args = parser.parse_args()
 
     n_qa = None if args.full else args.n_qa
@@ -1035,6 +1047,7 @@ def main():
         use_regex=use_regex,
         groups=groups,
         llm_config_obj=llm_config_obj,
+        qa_max_context_chars=args.qa_max_context_chars,
     )
 
 
