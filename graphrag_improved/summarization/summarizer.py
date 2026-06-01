@@ -257,9 +257,13 @@ def generate_community_summaries(
     cache: Dict[str, str] = {}
     if cache_path and Path(cache_path).exists():
         with open(cache_path, "r", encoding="utf-8") as f:
-            cache = json.load(f)
+            raw_cache = json.load(f)
+        # 过滤空字符串：Level-0/1 占位不进 pending（target_mask 已排除），
+        # 历史失败写入的 "" 需要重试，保留会导致永久跳过。
+        cache = {k: v for k, v in raw_cache.items() if v}
+        skipped_empty = len(raw_cache) - len(cache)
         if verbose:
-            print(f"  [摘要] 已加载缓存：{len(cache)} 条")
+            print(f"  [摘要] 已加载缓存：{len(cache)} 条（跳过空值 {skipped_empty} 条，将重试）")
 
     # 构建 prompt builder
     builder = CommunityTextBuilder(
@@ -320,7 +324,6 @@ def generate_community_summaries(
 
             if verbose and (done_count % SAVE_EVERY == 0 or done_count == total_count):
                 elapsed = time.time() - t0
-                rate = (done_count - len(summaries) + len(pending)) / elapsed if elapsed > 0 else 0
                 api_done = done_count - (total_count - len(pending))
                 rate = api_done / elapsed if elapsed > 0 else 0
                 print(f"  [摘要] {done_count}/{total_count}  ({rate:.1f} 条/s  已用 {elapsed:.0f}s)")
