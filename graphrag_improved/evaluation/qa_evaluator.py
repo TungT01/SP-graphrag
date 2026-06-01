@@ -146,7 +146,7 @@ def _generate_answer(
 
 def _make_qa_cache_key(question: str, context: str, model: str) -> str:
     """缓存 key：基于 question + context + model，任一变化则 miss。"""
-    raw = f"{question}|||{context[:3000]}|||{model}"
+    raw = f"{question}|||{context}|||{model}"
     return hashlib.md5(raw.encode()).hexdigest()
 
 
