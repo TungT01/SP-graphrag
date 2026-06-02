@@ -230,8 +230,9 @@ class TopDownRetriever:
     def _row_to_text(row) -> str:
         """将社区行转换为可检索的文本。"""
         parts = [str(row.get("title", ""))]
-        entity_ids = row.get("entity_ids", [])
-        if isinstance(entity_ids, list):
+        raw_eids = row.get("entity_ids")
+        entity_ids = list(raw_eids) if raw_eids is not None else []
+        if entity_ids:
             parts.extend([str(e) for e in entity_ids[:20]])
         summary = row.get("summary", "")
         if summary:
@@ -380,17 +381,16 @@ class BottomUpRetriever:
                         para_id = re.sub(r"-s\d+$", "", sent_id)
                         self._entity_chunks.setdefault(title, set()).add(para_id)
                     # 兼容旧格式（text_unit_ids 可能已是 para_id）
-                    raw = row.get("text_unit_ids", [])
-                    if isinstance(raw, list):
-                        for x in raw:
-                            x_str = str(x)
-                            para_id = re.sub(r"-s\d+$", "", x_str)
-                            self._entity_chunks.setdefault(title, set()).add(para_id)
+                    raw = row.get("text_unit_ids")
+                    if raw is None:
+                        raw_list = []
                     elif isinstance(raw, str):
-                        for x in raw.split(";"):
-                            if x.strip():
-                                para_id = re.sub(r"-s\d+$", "", x.strip())
-                                self._entity_chunks.setdefault(title, set()).add(para_id)
+                        raw_list = [x.strip() for x in raw.split(";") if x.strip()]
+                    else:
+                        raw_list = list(raw)
+                    for x in raw_list:
+                        para_id = re.sub(r"-s\d+$", "", str(x))
+                        self._entity_chunks.setdefault(title, set()).add(para_id)
 
         # 构建文本块的 TF-IDF 索引
         docs = [unit.get("text", "") for unit in text_units]
@@ -820,15 +820,12 @@ class VectorTopDownRetriever:
                 seen.add(comm_id)
                 row = rows[idx]
 
-                entity_ids = row.get("entity_ids", [])
-                if not isinstance(entity_ids, list):
-                    entity_ids = []
-                text_unit_ids = row.get("text_unit_ids", [])
-                if not isinstance(text_unit_ids, list):
-                    text_unit_ids = []
-                doc_ids = row.get("doc_ids", [])
-                if not isinstance(doc_ids, list):
-                    doc_ids = []
+                raw_eids = row.get("entity_ids")
+                entity_ids = list(raw_eids) if raw_eids is not None else []
+                raw_tuids = row.get("text_unit_ids")
+                text_unit_ids = list(raw_tuids) if raw_tuids is not None else []
+                raw_dids = row.get("doc_ids")
+                doc_ids = list(raw_dids) if raw_dids is not None else []
 
                 hits.append(CommunityHit(
                     community_id=comm_id,
