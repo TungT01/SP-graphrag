@@ -157,7 +157,13 @@ def _load_qa_cache(cache_path: Optional[str]) -> Dict[str, dict]:
     if p.exists():
         try:
             with open(p, "r", encoding="utf-8") as f:
-                return json.load(f)
+                raw = json.load(f)
+            # 过滤空答案：API 失败时写入 "" 不应被当作有效缓存命中
+            filtered = {k: v for k, v in raw.items() if v.get("predicted_answer", "").strip()}
+            skipped = len(raw) - len(filtered)
+            if skipped:
+                print(f"  [QA缓存] 跳过空答案 {skipped} 条（将重试）")
+            return filtered
         except (json.JSONDecodeError, ValueError):
             print(f"  [QA缓存] 文件损坏，已忽略并重建：{p.name}")
             p.unlink()
