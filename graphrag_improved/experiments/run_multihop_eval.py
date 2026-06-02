@@ -299,6 +299,14 @@ class RunResult:
     num_levels: int
 
 
+def _community_cache_tag(cfg: "RunConfig") -> str:
+    """生成社区检测结果的缓存文件名标签，唯一标识一组检测参数。"""
+    es = "es1" if cfg.use_edge_schedule else "es0"
+    xd = "xd1" if cfg.edge_schedule_cross_doc else "xd0"
+    idm = "idm1" if cfg.intra_doc_merging else "idm0"
+    return f"communities_l{cfg.lambda_init}_a{cfg.anchor_granularity}_{es}_{xd}_{idm}"
+
+
 def run_one(
     cfg: RunConfig,
     text_units: List[TextUnit],
@@ -308,6 +316,7 @@ def run_one(
     relationships_df,
     verbose: bool = True,
     qa_cache_path: Optional[str] = None,
+    community_cache_dir: Optional[Path] = None,
 ) -> RunResult:
     """运行单次实验（只做社区检测 + 评估，抽取结果复用）。"""
     t0 = time.time()
@@ -318,45 +327,63 @@ def run_one(
         print(f"  λ={cfg.lambda_init}  anchor={cfg.anchor_granularity}  mode={cfg.retrieval_mode}")
         print(f"{'─'*60}")
 
-    # 社区检测
+    # 社区检测（带缓存，消除 Leiden 随机性）
     if verbose:
         print(f"  [1/2] 社区检测 (λ={cfg.lambda_init}, anchor={cfg.anchor_granularity})...")
         t1 = time.time()
 
-    annealing_config = AnnealingConfig(
-        lambda_init=cfg.lambda_init,
-        lambda_min=cfg.lambda_min,
-        schedule=AnnealingSchedule(cfg.annealing_schedule),
-        decay_rate=cfg.decay_rate,
-        max_level=10,
-    )
+    import pandas as pd
+    communities_df = None
+    comm_cache_file = None
+    if community_cache_dir is not None:
+        tag = _community_cache_tag(cfg)
+        comm_cache_file = community_cache_dir / f"{tag}.parquet"
+        if comm_cache_file.exists():
+            communities_df = pd.read_parquet(comm_cache_file)
+            num_levels = communities_df["level"].nunique() if not communities_df.empty else 0
+            if verbose:
+                print(f"        [缓存] 社区 {len(communities_df)} 个，层次 {num_levels} 层  (from cache)")
 
-    # v5 新增：构建 EdgeSchedule（若启用）
-    edge_schedule = None
-    if cfg.use_edge_schedule:
-        edge_schedule = EdgeSchedule.build(
-            entities_df,
-            include_cross_doc=cfg.edge_schedule_cross_doc,
+    if communities_df is None:
+        annealing_config = AnnealingConfig(
+            lambda_init=cfg.lambda_init,
+            lambda_min=cfg.lambda_min,
+            schedule=AnnealingSchedule(cfg.annealing_schedule),
+            decay_rate=cfg.decay_rate,
+            max_level=10,
         )
-        if verbose:
-            print(f"        EdgeSchedule: {edge_schedule.summary()}")
 
-    communities_df = run_constrained_community_detection(
-        entities=entities_df,
-        relationships=relationships_df,
-        annealing_config=annealing_config,
-        max_cluster_size=cfg.max_cluster_size,
-        max_iterations=cfg.max_iterations,
-        seed=cfg.seed,
-        use_lcc=False,   # 处理所有连通分量（v3 图碎片化，不能只用 LCC）
-        intra_doc_merging=cfg.intra_doc_merging,
-        intra_doc_edge_weight=cfg.intra_doc_edge_weight,
-        anchor_granularity=cfg.anchor_granularity,
-        edge_schedule=edge_schedule,
-    )
-    num_levels = communities_df["level"].nunique() if not communities_df.empty else 0
-    if verbose:
-        print(f"        社区 {len(communities_df)} 个，层次 {num_levels} 层  ({time.time()-t1:.1f}s)")
+        edge_schedule = None
+        if cfg.use_edge_schedule:
+            edge_schedule = EdgeSchedule.build(
+                entities_df,
+                include_cross_doc=cfg.edge_schedule_cross_doc,
+            )
+            if verbose:
+                print(f"        EdgeSchedule: {edge_schedule.summary()}")
+
+        communities_df = run_constrained_community_detection(
+            entities=entities_df,
+            relationships=relationships_df,
+            annealing_config=annealing_config,
+            max_cluster_size=cfg.max_cluster_size,
+            max_iterations=cfg.max_iterations,
+            seed=cfg.seed,
+            use_lcc=False,
+            intra_doc_merging=cfg.intra_doc_merging,
+            intra_doc_edge_weight=cfg.intra_doc_edge_weight,
+            anchor_granularity=cfg.anchor_granularity,
+            edge_schedule=edge_schedule,
+        )
+        num_levels = communities_df["level"].nunique() if not communities_df.empty else 0
+        if verbose:
+            print(f"        社区 {len(communities_df)} 个，层次 {num_levels} 层  ({time.time()-t1:.1f}s)")
+
+        if comm_cache_file is not None:
+            community_cache_dir.mkdir(parents=True, exist_ok=True)
+            communities_df.to_parquet(comm_cache_file, index=False)
+            if verbose:
+                print(f"        [缓存] 已保存 → {comm_cache_file.name}")
 
     # 摘要生成（仅当 llm_config 不为 None 且 retrieval_mode 包含 TopDown 时）
     if cfg.llm_config is not None and cfg.retrieval_mode not in ("bottomup_only", "vector_bottomup_only"):
@@ -714,7 +741,8 @@ def run_experiment(
     for cfg in selected_configs:
         r = run_one(cfg, text_units, retrieval_units, eval_qa,
                     entities_df, relationships_df, verbose=verbose,
-                    qa_cache_path=qa_cache_path)
+                    qa_cache_path=qa_cache_path,
+                    community_cache_dir=cache_dir)
         results.append(r)
 
     # ── 5. 保存 & 打印结果 ───────────────────────────────────────
