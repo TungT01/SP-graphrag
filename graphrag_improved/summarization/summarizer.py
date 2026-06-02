@@ -353,6 +353,7 @@ def generate_community_summaries(
 
 def _community_cache_key(row: pd.Series) -> str:
     """基于社区实体列表和层级生成稳定缓存键。"""
-    entity_ids = sorted(str(e) for e in (row.get("entity_ids") or []))
+    raw = row.get("entity_ids")
+    entity_ids = sorted(str(e) for e in (raw if raw is not None else []))
     key_str = f"level={row.get('level', 0)}|entities={','.join(entity_ids[:30])}"
     return hashlib.md5(key_str.encode()).hexdigest()
