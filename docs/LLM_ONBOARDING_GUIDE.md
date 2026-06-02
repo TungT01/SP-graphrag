@@ -185,19 +185,19 @@ Q5: 如果让你改进这个算法，你会从哪里入手？给出至少 2 个�
 
 ```
 第一轮（必须，~7K token）：
-  ① LLM_REFERENCE.md
-  ② config.yaml
-  ③ constrained_leiden/__init__.py
-  ④ experiments/results/multihop_results_n200.json
-  ⑤ baselines/eval_results/n200/naive_rag_eval_results.json
+  ① docs/LLM_REFERENCE.md
+  ② graphrag_improved/config.yaml
+  ③ graphrag_improved/constrained_leiden/__init__.py
+  ④ graphrag_improved/experiments/results_v11b/multihop_results_n1000.json  ← 核心数据
+  ⑤ docs/EXPERIMENT_RESULTS.md
 
 第二轮（理解算法，+14K token）：
-  ⑥ constrained_leiden/physical_anchor.py
-  ⑦ constrained_leiden/annealing.py
-  ⑧ constrained_leiden/leiden_constrained.py
-  ⑨ constrained_leiden/edge_scheduler.py
+  ⑥ graphrag_improved/constrained_leiden/physical_anchor.py
+  ⑦ graphrag_improved/constrained_leiden/annealing.py
+  ⑧ graphrag_improved/constrained_leiden/leiden_constrained.py
+  ⑨ graphrag_improved/constrained_leiden/edge_scheduler.py
 
 第三轮（完整 Pipeline，按需 +30K token）：
-  ⑩ constrained_leiden/graphrag_workflow.py
-  ⑪ 根据任务选择 extractor.py / ingestion.py / retriever.py / evaluator.py
+  ⑩ graphrag_improved/constrained_leiden/graphrag_workflow.py
+  ⑪ 根据任务选择 extractor.py / ingestion.py / retriever.py / evaluator.py / qa_evaluator.py
 ```

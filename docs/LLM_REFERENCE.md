@@ -2,7 +2,7 @@
 
 > **用途**：这是一份专为 LLM（大语言模型）上下文窗口优化的单一权威参考文档。所有数字、API 签名、数据结构均直接从代码提取，不与其他文档重复。当其他文档与本文档冲突时，以本文档为准。
 >
-> **最后同步代码**：2026-05-11
+> **最后同步代码**：2026-06-01
 >
 > **项目一句话描述**：在 GraphRAG 的社区检测阶段注入结构熵惩罚（J = Q_leiden − λ·H_structure），使同一来源文档的实体倾向于聚入同一社区，从而提升多跳问答的检索召回率。
 
@@ -323,8 +323,10 @@ def evaluate_qa_end_to_end(
     llm_config: LlmConfig,
     max_context_chars: int = 3000,
     concurrency: int = 5,
+    cache_path: Optional[str] = None,   # 新增 2026-06-01：答案缓存路径
 ) -> QAMetrics
 # QAMetrics 包含：exact_match, token_f1, rouge_l, avg_context_chars, avg_latency_ms
+# 缓存 key = MD5(question + context[:3000] + model)，原子写入防崩溃损坏
 
 # === 摘要质量评估 ===
 # evaluation/summary_quality_evaluator.py
@@ -375,22 +377,33 @@ def evaluate_summary_quality(
 | 组号 | 名称 | λ | 检索模式 | 摘要 |
 |---|---|---|---|---|
 | [0] | A+VS GraphRAG-replica | 0 | vector_topdown_only | ✓ |
-| [1] | B3+VS SP-GraphRAG（核心） | 0.003 | vector_topdown_only | ✓ |
-| [2] | C3+VS 完整系统 | 0.003 | vector_uretrieval | ✓ |
-| [3] | D+V 纯向量段落 | — | vector_bottomup_only | ✗ |
+| [1] | B1+VS SP-GraphRAG 弱约束 | 0.001 | vector_topdown_only | ✓ |
+| [2] | B3+VS SP-GraphRAG（核心推荐） | 0.003 | vector_topdown_only | ✓ |
+| [3] | B5+VS SP-GraphRAG 强约束 | 0.005 | vector_topdown_only | ✓ |
+| [4] | C3+VS 完整系统 | 0.003 | vector_uretrieval | ✓ |
+| [5] | D+V 纯向量段落 | — | vector_bottomup_only | ✓ |
 
-**运行命令**（需 Kimi API key）：
+**运行命令**（默认 DeepSeek V4 Flash，2026-06-01 起）：
 ```bash
-cd /Users/ttung/Desktop/个人学习/SP-GraphRAG/graphrag_improved
-python -m experiments.run_multihop_eval \
-    --n-qa 500 --with-summary --provider kimi --api-key KEY \
-    --data-dir ../data/multihop_rag --output-dir experiments/results_v11
+cd /Users/ttung/Desktop/个人学习/SP-GraphRAG
+export DEEPSEEK_API_KEY=your_key
 
-# λ 消融（摘要质量实验，零成本）：
-python -m experiments.run_summary_quality_eval \
-    --provider kimi --api-key KEY --n-samples 200 \
+# 主实验（使用 venv Python）
+graphrag_improved/.venv-graphrag/bin/python3 -m graphrag_improved.experiments.run_multihop_eval \
+    --n-qa 1000 --with-summary \
+    --output-dir experiments/results_v12_deepseek
+
+# 只跑指定组（0=A+VS, 1=B1+VS, 2=B3+VS）
+graphrag_improved/.venv-graphrag/bin/python3 -m graphrag_improved.experiments.run_multihop_eval \
+    --n-qa 1000 --with-summary --groups 0,2
+
+# λ 消融/摘要质量实验：
+graphrag_improved/.venv-graphrag/bin/python3 -m graphrag_improved.experiments.run_summary_quality_eval \
+    --provider deepseek --api-key KEY --n-samples 200 \
     --output-dir experiments/results_summary_quality_full
 ```
+
+**注意**：工作目录必须是 `SP-GraphRAG/`（项目根），不能在 `graphrag_improved/` 内运行。
 
 ---
 
@@ -426,9 +439,10 @@ graphrag_improved/
 │   ├── results_v11/              # v11 向量检索（n=500）⭐ 核心
 │   ├── results_v11b/             # v11b 向量检索大样本（n=1000）⭐ 核心
 │   └── results_v11_lambda/       # λ 消融 + E3a/E3b 补充实验
-├── summary_cache/
-│   ├── summaries_leiden_standard.json      # λ=0 摘要缓存（15,177 条）
+├── summary_cache/                           # Kimi 摘要缓存（graphrag_improved/ 内）
+│   ├── summaries_leiden_standard.json      # λ=0 摘要缓存（15,177 条，完整）
 │   └── summaries_leiden_constrained_003.json  # λ=0.003 摘要缓存（109,122 条）
+# DeepSeek 摘要缓存在项目根 summary_cache/（与 graphrag_improved/ 并列）
 ├── config.yaml
 ├── README.md
 └── docs/archive/                 # 历史文档归档
