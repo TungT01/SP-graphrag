@@ -75,7 +75,8 @@ class CommunityTextBuilder:
         community_id = row.get("community_id", "?")
 
         # 实体列表
-        entity_ids: List[str] = row.get("entity_ids", []) or []
+        raw_eids = row.get("entity_ids")
+        entity_ids: List[str] = list(raw_eids) if raw_eids is not None else []
         entity_names = []
         for eid in entity_ids[:self.max_entities]:
             name = self._entity_titles.get(str(eid), str(eid))
@@ -85,7 +86,8 @@ class CommunityTextBuilder:
             entity_names.append(name)
 
         # 原文片段（从 text_unit_ids 取段落文本）
-        text_unit_ids: List[str] = row.get("text_unit_ids", []) or []
+        raw_tuids = row.get("text_unit_ids")
+        text_unit_ids: List[str] = list(raw_tuids) if raw_tuids is not None else []
         snippets = []
         total_chars = 0
         seen_chunks = set()

@@ -784,7 +784,8 @@ class VectorTopDownRetriever:
                     texts.append(summary)
                 else:
                     # 退化：用实体列表文本
-                    entity_ids = row.get("entity_ids", []) or []
+                    raw_eids = row.get("entity_ids")
+                    entity_ids = list(raw_eids) if raw_eids is not None else []
                     names = []
                     for eid in entity_ids[:20]:
                         name = str(eid).rsplit("-", 1)[-1].replace("_", " ")
